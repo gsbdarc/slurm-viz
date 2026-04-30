@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useApi } from "../hooks/useApi";
+import LoadingProgress from "./LoadingProgress";
 import {
   BarChart,
   Bar,
@@ -8,149 +9,356 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  LineChart,
+  ComposedChart,
   Line,
+  Legend,
 } from "recharts";
 
-export default function JobsDashboard() {
+function MiniCards({ data, label }) {
+  if (!data) return null;
+
+  const cards = [
+    { label: "Total Jobs", value: data.total_jobs?.toLocaleString() },
+    { label: "Unique Users", value: data.unique_users },
+    { label: "Partitions", value: data.unique_partitions },
+  ];
+
+  if (data.state_counts) {
+    Object.entries(data.state_counts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .forEach(([state, count]) => {
+        cards.push({ label: state, value: count.toLocaleString() });
+      });
+  }
+
+  return (
+    <div>
+      <div className="text-xs font-medium text-black-60 uppercase tracking-wide mb-2">
+        {label}
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2">
+        {cards.map((c) => (
+          <div
+            key={c.label}
+            className="bg-white rounded-lg shadow-sm border border-black-20 p-2 text-center"
+          >
+            <div className="text-lg font-bold text-black-su">{c.value}</div>
+            <div className="text-xs text-black-60">{c.label}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const JOB_COLUMNS = [
+  { key: "JobID", label: "Job ID" },
+  { key: "JobName", label: "Name" },
+  { key: "User", label: "User" },
+  { key: "Partition", label: "Partition" },
+  { key: "State", label: "State" },
+  { key: "NCPUS", label: "CPUs", numeric: true },
+  { key: "ReqMem_GB", label: "Memory (GB)", numeric: true },
+  { key: "wait_seconds", label: "Queue Wait (s)", numeric: true },
+  { key: "ElapsedRaw", label: "Elapsed (s)", numeric: true },
+  { key: "Submit", label: "Submit", date: true },
+  { key: "Start", label: "Start", date: true },
+  { key: "End", label: "End", date: true },
+  { key: "NodeList", label: "Nodes" },
+];
+
+function JobTable({ data, sort, setSort }) {
+  const handleSort = (col) => {
+    setSort((prev) =>
+      prev.col === col ? { col, asc: !prev.asc } : { col, asc: true },
+    );
+  };
+
+  const colMeta = Object.fromEntries(JOB_COLUMNS.map((c) => [c.key, c]));
+  const sorted = [...(data.jobs || [])].sort((a, b) => {
+    if (!sort.col) return 0;
+    let av = a[sort.col], bv = b[sort.col];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    const meta = colMeta[sort.col] || {};
+    if (meta.numeric) {
+      const na = Number(av), nb = Number(bv);
+      return sort.asc ? na - nb : nb - na;
+    }
+    if (meta.date) {
+      const da = new Date(av).getTime(), db = new Date(bv).getTime();
+      return sort.asc ? da - db : db - da;
+    }
+    av = String(av);
+    bv = String(bv);
+    return sort.asc ? av.localeCompare(bv) : bv.localeCompare(av);
+  });
+
+  const fmtVal = (col, val) => {
+    if (val == null) return "—";
+    if (col.numeric && typeof val === "number")
+      return val % 1 === 0 ? val.toLocaleString() : val.toFixed(2);
+    return String(val);
+  };
+
+  return (
+    <div className="bg-white rounded-lg shadow border border-black-20 overflow-hidden">
+      <div className="p-4 border-b border-black-20">
+        <h3 className="text-lg font-semibold text-black-su">
+          Jobs ({data.total?.toLocaleString()} total, showing{" "}
+          {data.jobs?.length})
+        </h3>
+      </div>
+      <div className="overflow-x-auto max-h-96">
+        <table className="w-full text-sm text-left">
+          <thead className="bg-fog sticky top-0">
+            <tr>
+              {JOB_COLUMNS.map((col) => (
+                <th
+                  key={col.key}
+                  className="px-4 py-2 font-medium text-black-su cursor-pointer select-none hover:bg-fog-dark"
+                  onClick={() => handleSort(col.key)}
+                >
+                  {col.label}
+                  {sort.col === col.key && (sort.asc ? " ▲" : " ▼")}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.slice(0, 200).map((job, i) => (
+              <tr key={i} className="border-t border-black-20 hover:bg-black-10">
+                {JOB_COLUMNS.map((col) => (
+                  <td key={col.key} className="px-4 py-2 whitespace-nowrap">
+                    {fmtVal(col, job[col.key])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+export default function JobsDashboard({ dateParams }) {
   const [filters, setFilters] = useState({
     state: "",
     user: "",
     partition: "",
   });
-  const params = new URLSearchParams(
+  const [sort, setSort] = useState({ col: null, asc: true });
+
+  const hasFilters = filters.state || filters.user || filters.partition;
+  const filterParams = new URLSearchParams(
     Object.fromEntries(Object.entries(filters).filter(([, v]) => v)),
   );
-  const { data, loading, error } = useApi(`/api/jobs?${params}`);
-  const { data: summary } = useApi("/api/summary");
 
-  if (loading) return <div className="text-gray-500 p-4">Loading jobs...</div>;
-  if (error) return <div className="text-red-500 p-4">Error: {error}</div>;
+  const { data, loading, error } = useApi(
+    `/api/jobs?${dateParams}&${filterParams}`,
+  );
+  const { data: summary, loading: lSummary } = useApi(`/api/summary?${dateParams}`);
+  const { data: filteredSummary, loading: lFiltered } = useApi(
+    hasFilters ? `/api/summary?${dateParams}&${filterParams}` : null,
+  );
+  const { data: timeline, loading: lTimeline } = useApi(
+    `/api/timeline?${dateParams}&${filterParams}`,
+  );
+  const { data: filterOptions, loading: lFilters } = useApi(`/api/filters?${dateParams}`);
+  const { data: waitTimes, loading: lWait } = useApi(
+    `/api/wait-times?${dateParams}&${filterParams}`,
+  );
 
-  const stateData = summary?.state_counts
-    ? Object.entries(summary.state_counts).map(([name, value]) => ({
+  const queries = [loading, lSummary, lTimeline, lFilters, lWait, ...(hasFilters ? [lFiltered] : [])];
+  const total = queries.length;
+  const completed = queries.filter((l) => !l).length;
+  const anyLoading = completed < total;
+
+  const details = [];
+  if (!lSummary && summary) details.push(`${summary.total_jobs?.toLocaleString()} jobs`);
+  if (!lFilters && filterOptions) {
+    const parts = [];
+    if (filterOptions.users?.length) parts.push(`${filterOptions.users.length} users`);
+    if (filterOptions.partitions?.length) parts.push(`${filterOptions.partitions.length} partitions`);
+    if (parts.length) details.push(parts.join(", "));
+  }
+  if (!lTimeline && timeline?.data?.length) details.push(`${timeline.data.length} time periods`);
+  if (!lWait && waitTimes?.data?.length) details.push(`${waitTimes.data.length} wait records`);
+  if (!loading && data?.jobs?.length) details.push(`${data.jobs.length} rows loaded`);
+  if (hasFilters && !lFiltered && filteredSummary) details.push(`${filteredSummary.total_jobs?.toLocaleString()} filtered`);
+
+  if (anyLoading && !data) return <LoadingProgress completed={completed} total={total} label="Loading jobs" details={details} />;
+  if (error) return <div className="text-spirited p-4">Error: {error}</div>;
+
+  const filterParts = [
+    filters.user && `user: ${filters.user}`,
+    filters.state && `state: ${filters.state}`,
+    filters.partition && `partition: ${filters.partition}`,
+  ].filter(Boolean);
+  const filterSuffix = filterParts.length > 0 ? ` (${filterParts.join(", ")})` : "";
+
+  const activeSummary = hasFilters && filteredSummary ? filteredSummary : summary;
+  const stateData = activeSummary?.state_counts
+    ? Object.entries(activeSummary.state_counts).map(([name, value]) => ({
         name,
         value,
       }))
     : [];
 
-  const timelineData = (() => {
-    if (!data?.jobs?.length) return [];
-    const dateField = data.jobs[0].Submit || data.jobs[0].Start;
-    if (!dateField) return [];
-    const field = data.jobs[0].Submit ? "Submit" : "Start";
-    const counts = {};
-    data.jobs.forEach((job) => {
-      if (!job[field]) return;
-      const day = String(job[field]).slice(0, 10);
-      counts[day] = (counts[day] || 0) + 1;
-    });
-    return Object.entries(counts)
-      .sort()
-      .map(([date, count]) => ({ date, count }));
-  })();
+  const rawWait = waitTimes?.data || [];
+  const maxWaitMin = Math.max(0, ...rawWait.map((r) => r.max_wait_minutes || 0));
+  const waitUnit = maxWaitMin >= 1440 ? "days" : maxWaitMin >= 60 ? "hours" : "minutes";
+  const waitDivisor = waitUnit === "days" ? 1440 : waitUnit === "hours" ? 60 : 1;
 
+  const waitByDate = {};
+  rawWait.forEach((r) => {
+    const d = typeof r.period === "number" ? new Date(r.period) : new Date(String(r.period).length === 10 ? r.period + "T00:00:00" : r.period);
+    const key = isNaN(d.getTime()) ? String(r.period) : d.toISOString().slice(0, 10);
+    waitByDate[key] = {
+      avg: r.avg_wait_minutes != null ? +(r.avg_wait_minutes / waitDivisor).toFixed(1) : null,
+      median: r.median_wait_minutes != null ? +(r.median_wait_minutes / waitDivisor).toFixed(1) : null,
+      max: r.max_wait_minutes != null ? +(r.max_wait_minutes / waitDivisor).toFixed(1) : null,
+    };
+  });
+
+  const timelineGran = timeline?.granularity || "day";
+
+  function parsePeriod(val) {
+    if (val == null) return null;
+    if (typeof val === "number") return new Date(val);
+    const s = String(val);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(s + "T00:00:00");
+    return new Date(s);
+  }
+
+  function formatPeriodLabel(val) {
+    const d = parsePeriod(val);
+    if (!d || isNaN(d.getTime())) return String(val);
+    const utc = { timeZone: "UTC" };
+    const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric", ...utc });
+    if (timelineGran === "week") {
+      const end = new Date(d);
+      end.setDate(end.getDate() + 6);
+      return `${fmt(d)} – ${fmt(end)}`;
+    }
+    if (timelineGran === "month") {
+      return d.toLocaleDateString("en-US", { month: "short", year: "numeric", ...utc });
+    }
+    return fmt(d);
+  }
+
+  function periodKey(val) {
+    const d = parsePeriod(val);
+    if (!d || isNaN(d.getTime())) return String(val);
+    return d.toISOString().slice(0, 10);
+  }
+
+  const combinedData = (timeline?.data || []).map((r) => {
+    const key = periodKey(r.period);
+    return { date: key, label: formatPeriodLabel(r.period), count: r.count, ...waitByDate[key] };
+  });
   return (
     <div className="space-y-6">
-      <div className="flex gap-3">
-        <input
-          className="border rounded px-3 py-1.5 text-sm"
-          placeholder="Filter by state..."
+      <div className="flex gap-3 items-center">
+        <select
+          className="border border-black-20 rounded px-3 py-1.5 text-sm bg-white"
           value={filters.state}
           onChange={(e) => setFilters({ ...filters, state: e.target.value })}
-        />
-        <input
-          className="border rounded px-3 py-1.5 text-sm"
-          placeholder="Filter by user..."
+        >
+          <option value="">All states</option>
+          {(filterOptions?.states || []).map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+        <select
+          className="border border-black-20 rounded px-3 py-1.5 text-sm bg-white"
           value={filters.user}
           onChange={(e) => setFilters({ ...filters, user: e.target.value })}
-        />
-        <input
-          className="border rounded px-3 py-1.5 text-sm"
-          placeholder="Filter by partition..."
+        >
+          <option value="">All users</option>
+          {(filterOptions?.users || []).map((u) => (
+            <option key={u} value={u}>
+              {u}
+            </option>
+          ))}
+        </select>
+        <select
+          className="border border-black-20 rounded px-3 py-1.5 text-sm bg-white"
           value={filters.partition}
           onChange={(e) =>
             setFilters({ ...filters, partition: e.target.value })
           }
-        />
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {stateData.length > 0 && (
-          <div className="bg-white rounded-lg shadow p-4">
-            <h3 className="text-lg font-semibold mb-3">Jobs by State</h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={stateData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="name" />
-                <YAxis />
-                <Tooltip />
-                <Bar dataKey="value" fill="#3b82f6" />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-
-        {timelineData.length > 0 && (
-          <div className="bg-white rounded-lg shadow p-4">
-            <h3 className="text-lg font-semibold mb-3">
-              Job Submissions Over Time
-            </h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={timelineData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="date" />
-                <YAxis />
-                <Tooltip />
-                <Line
-                  type="monotone"
-                  dataKey="count"
-                  stroke="#3b82f6"
-                  strokeWidth={2}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
+        >
+          <option value="">All partitions</option>
+          {(filterOptions?.partitions || []).map((p) => (
+            <option key={p} value={p}>
+              {p}
+            </option>
+          ))}
+        </select>
+        {hasFilters && (
+          <button
+            onClick={() => setFilters({ state: "", user: "", partition: "" })}
+            className="text-sm text-black-60 hover:text-black-su px-2"
+          >
+            Clear
+          </button>
         )}
       </div>
 
-      <div className="bg-white rounded-lg shadow overflow-hidden">
-        <div className="p-4 border-b">
-          <h3 className="text-lg font-semibold">
-            Jobs ({data.total?.toLocaleString()} total, showing{" "}
-            {data.jobs?.length})
+      {anyLoading && data && (
+        <LoadingProgress completed={completed} total={total} label="Updating results" details={details} />
+      )}
+
+      {!anyLoading && <>
+      {hasFilters && filteredSummary && (
+        <MiniCards data={filteredSummary} label="Filtered" />
+      )}
+
+      {stateData.length > 0 && (
+        <div className="bg-white rounded-lg shadow border border-black-20 p-4">
+          <h3 className="text-lg font-semibold text-black-su mb-3">Jobs by State{filterSuffix}</h3>
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={stateData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="name" />
+              <YAxis />
+              <Tooltip />
+              <Bar dataKey="value" fill="#B1040E" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {combinedData.length > 0 && (
+        <div className="bg-white rounded-lg shadow border border-black-20 p-4">
+          <h3 className="text-lg font-semibold text-black-su mb-3">
+            Job Submissions &amp; Queue Wait Time{filterSuffix}
           </h3>
+          <ResponsiveContainer width="100%" height={350}>
+            <ComposedChart data={combinedData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="label" />
+              <YAxis yAxisId="left" label={{ value: "Jobs", angle: -90, position: "insideLeft" }} />
+              <YAxis yAxisId="right" orientation="right" label={{ value: `Wait (${waitUnit})`, angle: 90, position: "insideRight" }} />
+              <Tooltip />
+              <Legend />
+              <Bar yAxisId="left" dataKey="count" fill="#4298B5" name="Jobs" opacity={0.4} />
+              <Line yAxisId="right" type="monotone" dataKey="median" stroke="#008566" strokeWidth={2} dot={false} name={`Median (${waitUnit})`} />
+              <Line yAxisId="right" type="monotone" dataKey="avg" stroke="#E98300" strokeWidth={2} dot={false} name={`Avg (${waitUnit})`} />
+              <Line yAxisId="right" type="monotone" dataKey="max" stroke="#B83A4B" strokeWidth={1} strokeDasharray="4 4" dot={false} name={`Max (${waitUnit})`} />
+            </ComposedChart>
+          </ResponsiveContainer>
         </div>
-        <div className="overflow-x-auto max-h-96">
-          <table className="w-full text-sm text-left">
-            <thead className="bg-gray-50 sticky top-0">
-              <tr>
-                {data.jobs?.[0] &&
-                  Object.keys(data.jobs[0])
-                    .slice(0, 8)
-                    .map((col) => (
-                      <th key={col} className="px-4 py-2 font-medium">
-                        {col}
-                      </th>
-                    ))}
-              </tr>
-            </thead>
-            <tbody>
-              {data.jobs?.slice(0, 100).map((job, i) => (
-                <tr key={i} className="border-t hover:bg-gray-50">
-                  {Object.values(job)
-                    .slice(0, 8)
-                    .map((val, j) => (
-                      <td key={j} className="px-4 py-2 whitespace-nowrap">
-                        {String(val ?? "")}
-                      </td>
-                    ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      )}
+
+      <JobTable data={data} sort={sort} setSort={setSort} />
+      </>}
     </div>
   );
 }

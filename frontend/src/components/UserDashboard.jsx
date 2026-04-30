@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { useApi } from "../hooks/useApi";
+import LoadingProgress from "./LoadingProgress";
 import {
   BarChart,
   Bar,
@@ -7,127 +9,273 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
+  Legend,
 } from "recharts";
 
 const COLORS = [
-  "#3b82f6",
-  "#10b981",
-  "#f59e0b",
-  "#ef4444",
-  "#8b5cf6",
-  "#ec4899",
-  "#06b6d4",
-  "#84cc16",
+  "#B1040E",
+  "#008566",
+  "#E98300",
+  "#4298B5",
+  "#175E54",
+  "#620059",
+  "#007C92",
+  "#E04F39",
 ];
 
-export default function UserDashboard() {
-  const { data, loading, error } = useApi("/api/users");
+const USER_COLUMNS = [
+  { key: "User", label: "User" },
+  { key: "job_count", label: "Jobs", numeric: true },
+  { key: "total_cpus", label: "Total CPUs", numeric: true },
+  { key: "total_elapsed", label: "Elapsed (s)", numeric: true },
+  { key: "cpu_hours", label: "CPU Hours", numeric: true },
+  { key: "total_wait_hours", label: "Queue Wait (hrs)", numeric: true },
+];
 
-  if (loading)
-    return <div className="text-gray-500 p-4">Loading user data...</div>;
-  if (error) return <div className="text-red-500 p-4">Error: {error}</div>;
+const numericUserCols = new Set(USER_COLUMNS.filter((c) => c.numeric).map((c) => c.key));
+
+function UserTable({ users }) {
+  const [sort, setSort] = useState({ col: "cpu_hours", asc: false });
+
+  const handleSort = (col) => {
+    setSort((prev) =>
+      prev.col === col ? { col, asc: !prev.asc } : { col, asc: false },
+    );
+  };
+
+  const sorted = [...users].sort((a, b) => {
+    if (!sort.col) return 0;
+    let av = a[sort.col], bv = b[sort.col];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (numericUserCols.has(sort.col)) {
+      const na = Number(av), nb = Number(bv);
+      return sort.asc ? na - nb : nb - na;
+    }
+    return sort.asc
+      ? String(av).localeCompare(String(bv))
+      : String(bv).localeCompare(String(av));
+  });
+
+  const fmtVal = (col, val) => {
+    if (val == null) return "—";
+    if (col.numeric && typeof val === "number")
+      return val % 1 === 0 ? val.toLocaleString() : val.toFixed(1);
+    return String(val);
+  };
+
+  return (
+    <div className="bg-white rounded-lg shadow border border-black-20 overflow-hidden">
+      <div className="p-4 border-b border-black-20">
+        <h3 className="text-lg font-semibold text-black-su">All Users ({users.length})</h3>
+      </div>
+      <div className="overflow-x-auto max-h-96">
+        <table className="w-full text-sm text-left">
+          <thead className="bg-fog sticky top-0">
+            <tr>
+              {USER_COLUMNS.map((col) => (
+                <th
+                  key={col.key}
+                  className="px-4 py-2 font-medium text-black-su cursor-pointer select-none hover:bg-fog-dark"
+                  onClick={() => handleSort(col.key)}
+                >
+                  {col.label}
+                  {sort.col === col.key && (sort.asc ? " ▲" : " ▼")}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((user, i) => (
+              <tr key={i} className="border-t border-black-20 hover:bg-black-10">
+                {USER_COLUMNS.map((col) => (
+                  <td key={col.key} className="px-4 py-2 whitespace-nowrap">
+                    {fmtVal(col, user[col.key])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+export default function UserDashboard({ dateParams }) {
+  const [partition, setPartition] = useState("");
+
+  const filterParams = partition ? `&partition=${partition}` : "";
+
+  const { data, loading, error } = useApi(`/api/users?${dateParams}${filterParams}`);
+  const { data: byPeriod, loading: lPeriod } = useApi(
+    `/api/users/by-period?${dateParams}${filterParams}`,
+  );
+  const { data: filterOptions } = useApi(`/api/filters?${dateParams}`);
+
+  const queries = [loading, lPeriod];
+  const total = queries.length;
+  const completed = queries.filter((l) => !l).length;
+  const anyLoading = completed < total;
+
+  const details = [];
+  if (data?.users?.length) details.push(`${data.users.length} users`);
+  if (byPeriod?.data?.length) details.push(`${byPeriod.data.length} period records`);
+  if (filterOptions?.partitions?.length) details.push(`${filterOptions.partitions.length} partitions`);
+
+  if (loading && !data)
+    return <LoadingProgress completed={completed} total={total} label="Loading users" details={details} />;
+  if (error) return <div className="text-spirited p-4">Error: {error}</div>;
 
   const users = data.users || [];
-  const topUsers = users.slice(0, 10);
+  const topByCpuHours = [...users].sort((a, b) => (b.cpu_hours || 0) - (a.cpu_hours || 0)).slice(0, 10);
+  const topByJobCount = [...users].sort((a, b) => (b.job_count || 0) - (a.job_count || 0)).slice(0, 10);
 
-  const cpuHoursField = topUsers[0]?.cpu_hours != null ? "cpu_hours" : null;
-  const jobCountField = Object.keys(topUsers[0] || {}).find((k) =>
-    k.includes("count"),
+  const periodRows = byPeriod?.data || [];
+  const periodGranularity = byPeriod?.granularity || "month";
+  const partitions = [
+    ...new Set(periodRows.map((r) => r.Partition)),
+  ].sort();
+
+  function parsePeriod(val) {
+    if (val == null) return null;
+    if (typeof val === "number") return new Date(val);
+    const s = String(val);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(s + "T00:00:00");
+    return new Date(s);
+  }
+
+  function formatPeriod(val) {
+    const d = parsePeriod(val);
+    if (!d || isNaN(d.getTime())) return String(val);
+    const utc = { timeZone: "UTC" };
+    if (periodGranularity === "month")
+      return d.toLocaleDateString("en-US", { month: "short", year: "numeric", ...utc });
+    if (periodGranularity === "week") {
+      const end = new Date(d);
+      end.setDate(end.getDate() + 6);
+      const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric", ...utc });
+      return `${fmt(d)} – ${fmt(end)}`;
+    }
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric", ...utc });
+  }
+
+  function periodSortKey(val) {
+    const d = parsePeriod(val);
+    if (!d || isNaN(d.getTime())) return String(val);
+    return d.toISOString();
+  }
+
+  const periodMap = {};
+  periodRows.forEach((r) => {
+    const sortKey = periodSortKey(r.period);
+    if (!periodMap[sortKey]) periodMap[sortKey] = { period: formatPeriod(r.period), _sort: sortKey };
+    periodMap[sortKey][r.Partition] = r.unique_users;
+  });
+  const periodData = Object.values(periodMap).sort((a, b) =>
+    a._sort.localeCompare(b._sort),
   );
+  const periodLabel = periodGranularity === "day" ? "Day" : periodGranularity === "week" ? "Week" : "Month";
+
+  const partitionSuffix = partition ? ` (${partition})` : "";
 
   return (
     <div className="space-y-6">
+      <div className="flex gap-3 items-center">
+        <select
+          className="border border-black-20 rounded px-3 py-1.5 text-sm bg-white"
+          value={partition}
+          onChange={(e) => setPartition(e.target.value)}
+        >
+          <option value="">All partitions</option>
+          {(filterOptions?.partitions || []).map((p) => (
+            <option key={p} value={p}>{p}</option>
+          ))}
+        </select>
+        {partition && (
+          <button
+            onClick={() => setPartition("")}
+            className="text-sm text-black-60 hover:text-black-su px-2"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
+      {anyLoading && data && (
+        <LoadingProgress completed={completed} total={total} label="Updating results" details={details} />
+      )}
+
+      {!anyLoading && <>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {cpuHoursField && (
-          <div className="bg-white rounded-lg shadow p-4">
-            <h3 className="text-lg font-semibold mb-3">
-              Top Users by CPU Hours
+        {topByCpuHours.length > 0 && topByCpuHours[0].cpu_hours != null && (
+          <div className="bg-white rounded-lg shadow border border-black-20 p-4">
+            <h3 className="text-lg font-semibold text-black-su mb-3">
+              Top Users by CPU Hours{partitionSuffix}
             </h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={topUsers} layout="vertical">
+            <ResponsiveContainer width="100%" height={400}>
+              <BarChart data={topByCpuHours} layout="vertical" margin={{ left: 10 }}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis type="number" />
-                <YAxis dataKey="User" type="category" width={100} />
+                <YAxis dataKey="User" type="category" width={120} tick={{ fontSize: 13 }} />
                 <Tooltip
                   formatter={(v) =>
                     typeof v === "number" ? v.toFixed(1) : v
                   }
                 />
-                <Bar dataKey="cpu_hours" fill="#3b82f6" name="CPU Hours" />
+                <Bar dataKey="cpu_hours" fill="#B1040E" name="CPU Hours" />
               </BarChart>
             </ResponsiveContainer>
           </div>
         )}
 
-        {topUsers.length > 0 && jobCountField && (
-          <div className="bg-white rounded-lg shadow p-4">
-            <h3 className="text-lg font-semibold mb-3">
-              Job Distribution (Top 10)
+        {topByJobCount.length > 0 && (
+          <div className="bg-white rounded-lg shadow border border-black-20 p-4">
+            <h3 className="text-lg font-semibold text-black-su mb-3">
+              Top Users by Job Count{partitionSuffix}
             </h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <PieChart>
-                <Pie
-                  data={topUsers}
-                  dataKey={jobCountField}
-                  nameKey="User"
-                  cx="50%"
-                  cy="50%"
-                  outerRadius={100}
-                  label={({ User, value }) => `${User}: ${value}`}
-                >
-                  {topUsers.map((_, i) => (
-                    <Cell
-                      key={i}
-                      fill={COLORS[i % COLORS.length]}
-                    />
-                  ))}
-                </Pie>
+            <ResponsiveContainer width="100%" height={400}>
+              <BarChart data={topByJobCount} layout="vertical" margin={{ left: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis type="number" />
+                <YAxis dataKey="User" type="category" width={120} tick={{ fontSize: 13 }} />
                 <Tooltip />
-              </PieChart>
+                <Bar dataKey="job_count" fill="#008566" name="Jobs" />
+              </BarChart>
             </ResponsiveContainer>
           </div>
         )}
       </div>
 
-      <div className="bg-white rounded-lg shadow overflow-hidden">
-        <div className="p-4 border-b">
-          <h3 className="text-lg font-semibold">
-            All Users ({users.length})
+      {periodData.length > 0 && (
+        <div className="bg-white rounded-lg shadow border border-black-20 p-4">
+          <h3 className="text-lg font-semibold text-black-su mb-3">
+            Unique Users by {periodLabel} by Partition{partitionSuffix}
           </h3>
-        </div>
-        <div className="overflow-x-auto max-h-96">
-          <table className="w-full text-sm text-left">
-            <thead className="bg-gray-50 sticky top-0">
-              <tr>
-                {users[0] &&
-                  Object.keys(users[0]).map((col) => (
-                    <th key={col} className="px-4 py-2 font-medium">
-                      {col}
-                    </th>
-                  ))}
-              </tr>
-            </thead>
-            <tbody>
-              {users.map((user, i) => (
-                <tr key={i} className="border-t hover:bg-gray-50">
-                  {Object.values(user).map((val, j) => (
-                    <td key={j} className="px-4 py-2 whitespace-nowrap">
-                      {typeof val === "number"
-                        ? val % 1 === 0
-                          ? val.toLocaleString()
-                          : val.toFixed(1)
-                        : String(val ?? "")}
-                    </td>
-                  ))}
-                </tr>
+          <ResponsiveContainer width="100%" height={350}>
+            <BarChart data={periodData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="period" />
+              <YAxis />
+              <Tooltip />
+              <Legend />
+              {partitions.map((p, i) => (
+                <Bar
+                  key={p}
+                  dataKey={p}
+                  stackId="a"
+                  fill={COLORS[i % COLORS.length]}
+                  name={p}
+                />
               ))}
-            </tbody>
-          </table>
+            </BarChart>
+          </ResponsiveContainer>
         </div>
-      </div>
+      )}
+
+      <UserTable users={users} />
+      </>}
     </div>
   );
 }

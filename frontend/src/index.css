@@ -1,1 +1,70 @@
 @import "tailwindcss";
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.progress-shimmer {
+  background: linear-gradient(
+    90deg,
+    #B1040E 0%,
+    #B1040E 30%,
+    #E04F39 50%,
+    #B1040E 70%,
+    #B1040E 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 2s ease-in-out infinite;
+}
+
+.su-brand-logo {
+  font-family: Stanford, "Source Serif 4", "Source Serif Pro", Georgia, Times, serif;
+  font-feature-settings: "liga";
+  font-variant-ligatures: discretionary-ligatures;
+  font-size: 20px;
+  font-weight: 400;
+  font-style: normal;
+  line-height: 0.75;
+  letter-spacing: 0;
+  white-space: nowrap;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transform: translateZ(0);
+}
+
+@theme {
+  --color-cardinal-red: #8C1515;
+  --color-cardinal-red-light: #B83A4B;
+  --color-cardinal-red-dark: #820000;
+  --color-digital-red: #B1040E;
+  --color-digital-red-light: #E50808;
+  --color-digital-blue: #006CB8;
+  --color-digital-blue-dark: #00548F;
+  --color-digital-green: #008566;
+  --color-digital-green-light: #1AECBA;
+  --color-palo-alto: #175E54;
+  --color-palo-verde: #279989;
+  --color-black-su: #2E2D29;
+  --color-black-80: #585754;
+  --color-black-60: #767674;
+  --color-black-40: #ABABA9;
+  --color-black-20: #D5D5D4;
+  --color-black-10: #EAEAEA;
+  --color-fog-light: #F4F4F4;
+  --color-fog: #DAD7CB;
+  --color-fog-dark: #B6B1A9;
+  --color-cool-grey: #53565A;
+  --color-poppy: #E98300;
+  --color-poppy-light: #F9A44A;
+  --color-sky: #4298B5;
+  --color-sky-dark: #016895;
+  --color-lagunita: #007C92;
+  --color-spirited: #E04F39;
+  --color-illuminating: #FEDD5C;
+  --color-plum: #620059;
+  --font-sans: "Source Sans 3", "Source Sans Pro", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-serif: "Source Serif 4", "Source Serif Pro", Georgia, Times, serif;
+  --font-slab: "Roboto Slab", Georgia, Times, serif;
+  --font-mono: "Roboto Mono", Menlo, "Courier New", monospace;
+}
