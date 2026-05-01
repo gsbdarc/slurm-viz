@@ -1,4 +1,5 @@
-import { useApi } from "../hooks/useApi";
+import { useRedivisQuery } from "../hooks/useRedivisQuery";
+import { getClusterUtilization } from "../redivis/queries";
 import LoadingProgress from "./LoadingProgress";
 import {
   BarChart,
@@ -38,8 +39,11 @@ function fmtDuration(seconds) {
   return `${d}d ${h % 24}h`;
 }
 
-export default function ClusterDashboard({ dateParams }) {
-  const { data, loading, error } = useApi(`/api/cluster?${dateParams}`);
+export default function ClusterDashboard({ startDate, endDate }) {
+  const { data, loading, error } = useRedivisQuery(
+    () => getClusterUtilization(startDate, endDate),
+    `cluster_${startDate}_${endDate}`,
+  );
 
   const details = [];
   if (data?.cpu_by_partition?.length) details.push(`${data.cpu_by_partition.length} partitions`);
@@ -79,7 +83,7 @@ export default function ClusterDashboard({ dateParams }) {
                   outerRadius={100}
                   innerRadius={40}
                   paddingAngle={2}
-                  label={({ name, value, percent }) => `${name} (${(percent * 100).toFixed(0)}%)`}
+                  label={({ name, percent }) => `${name} (${(percent * 100).toFixed(0)}%)`}
                   labelLine={{ stroke: "#585754" }}
                 >
                   {partitionData.map((_, i) => (

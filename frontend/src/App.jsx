@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import * as redivis from "redivis";
 import SummaryCards from "./components/SummaryCards";
 import JobsDashboard from "./components/JobsDashboard";
 import ClusterDashboard from "./components/ClusterDashboard";
@@ -23,57 +24,27 @@ const PRESETS = [
   { label: "1y", days: 365 },
 ];
 
-function AuthButton() {
-  const [status, setStatus] = useState(null);
-  const [authUrl, setAuthUrl] = useState(null);
-  const [polling, setPolling] = useState(false);
+function AuthButton({ authed, onAuthChange }) {
+  const [loggingIn, setLoggingIn] = useState(false);
 
-  useEffect(() => {
-    fetch("/api/auth/status")
-      .then((r) => r.json())
-      .then(setStatus)
-      .catch(() => setStatus(null));
-  }, []);
-
-  useEffect(() => {
-    if (!polling) return;
-    const id = setInterval(() => {
-      fetch("/api/auth/poll")
-        .then((r) => r.json())
-        .then((res) => {
-          if (res.status === "authenticated") {
-            setPolling(false);
-            setAuthUrl(null);
-            setStatus({ authenticated: true });
-            window.location.reload();
-          } else if (res.status === "error") {
-            setPolling(false);
-            setAuthUrl(null);
-          }
-        });
-    }, 5000);
-    return () => clearInterval(id);
-  }, [polling]);
-
-  const handleAuth = () => {
-    fetch("/api/auth/start", { method: "POST" })
-      .then((r) => r.json())
-      .then((res) => {
-        if (res.verification_url) {
-          setAuthUrl(res.verification_url);
-          setPolling(true);
-          window.open(res.verification_url, "_blank");
-        }
-      });
+  const handleLogin = async () => {
+    setLoggingIn(true);
+    try {
+      await redivis.authorize();
+      onAuthChange(true);
+    } catch {
+      // user closed popup or error
+    } finally {
+      setLoggingIn(false);
+    }
   };
 
-  const handleLogout = () => {
-    fetch("/api/auth/logout", { method: "POST" })
-      .then((r) => r.json())
-      .then(() => window.location.reload());
+  const handleLogout = async () => {
+    await redivis.deauthorize();
+    onAuthChange(false);
   };
 
-  if (status?.authenticated) {
+  if (authed) {
     return (
       <div className="flex items-center gap-2">
         <span className="text-sm text-digital-green-light font-medium">
@@ -89,27 +60,17 @@ function AuthButton() {
     );
   }
 
-  if (authUrl) {
+  if (loggingIn) {
     return (
-      <div className="flex items-center gap-2">
-        <span className="text-sm text-poppy animate-pulse">
-          Waiting for login...
-        </span>
-        <a
-          href={authUrl}
-          target="_blank"
-          rel="noreferrer"
-          className="text-sm text-digital-blue underline"
-        >
-          Open Redivis
-        </a>
-      </div>
+      <span className="text-sm text-poppy animate-pulse">
+        Waiting for login...
+      </span>
     );
   }
 
   return (
     <button
-      onClick={handleAuth}
+      onClick={handleLogin}
       className="px-3 py-1.5 rounded-md text-sm font-medium bg-poppy text-white hover:bg-poppy-light"
     >
       Authenticate with Redivis
@@ -171,8 +132,11 @@ export default function App() {
   const [tab, setTab] = useState("jobs");
   const [startDate, setStartDate] = useState(daysAgo(30));
   const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10));
+  const [authed, setAuthed] = useState(null);
 
-  const dateParams = `start=${startDate}&end=${endDate}`;
+  useEffect(() => {
+    redivis.isAuthorized().then(setAuthed);
+  }, []);
 
   return (
     <div className="min-h-screen bg-fog-light font-sans">
@@ -206,30 +170,46 @@ export default function App() {
                 </button>
               ))}
             </nav>
-            <AuthButton />
+            <AuthButton authed={authed} onAuthChange={setAuthed} />
           </div>
         </div>
       </header>
 
-      <div className="sticky top-0 z-10 bg-fog-light border-b border-black-20 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 py-3">
-          <DateRangePicker
-            startDate={startDate}
-            endDate={endDate}
-            onChange={(s, e) => {
-              setStartDate(s);
-              setEndDate(e);
-            }}
-          />
+      {authed === false && (
+        <div className="max-w-7xl mx-auto px-4 py-16 text-center">
+          <h2 className="text-2xl font-semibold text-black-su mb-3">
+            Sign in to view cluster statistics
+          </h2>
+          <p className="text-black-60 mb-6">
+            Authenticate with your Redivis account to access Slurm job data.
+          </p>
+          <AuthButton authed={false} onAuthChange={setAuthed} />
         </div>
-      </div>
+      )}
 
-      <main className="max-w-7xl mx-auto px-4 py-4">
-        <SummaryCards dateParams={dateParams} />
-        {tab === "jobs" && <JobsDashboard dateParams={dateParams} />}
-        {tab === "cluster" && <ClusterDashboard dateParams={dateParams} />}
-        {tab === "users" && <UserDashboard dateParams={dateParams} />}
-      </main>
+      {authed && (
+        <>
+          <div className="sticky top-0 z-10 bg-fog-light border-b border-black-20 shadow-sm">
+            <div className="max-w-7xl mx-auto px-4 py-3">
+              <DateRangePicker
+                startDate={startDate}
+                endDate={endDate}
+                onChange={(s, e) => {
+                  setStartDate(s);
+                  setEndDate(e);
+                }}
+              />
+            </div>
+          </div>
+
+          <main className="max-w-7xl mx-auto px-4 py-4">
+            <SummaryCards startDate={startDate} endDate={endDate} />
+            {tab === "jobs" && <JobsDashboard startDate={startDate} endDate={endDate} />}
+            {tab === "cluster" && <ClusterDashboard startDate={startDate} endDate={endDate} />}
+            {tab === "users" && <UserDashboard startDate={startDate} endDate={endDate} />}
+          </main>
+        </>
+      )}
 
       <footer className="bg-cardinal-red mt-8">
         <div className="max-w-7xl mx-auto px-4 py-6 flex flex-col sm:flex-row items-center justify-between gap-2">

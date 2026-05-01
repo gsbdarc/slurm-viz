@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { useApi } from "../hooks/useApi";
+import { useRedivisQuery } from "../hooks/useRedivisQuery";
+import { getSummary, getJobs, getTimeline, getFilterOptions, getWaitTimes } from "../redivis/queries";
 import LoadingProgress from "./LoadingProgress";
 import {
   BarChart,
@@ -144,7 +145,7 @@ function JobTable({ data, sort, setSort }) {
   );
 }
 
-export default function JobsDashboard({ dateParams }) {
+export default function JobsDashboard({ startDate, endDate }) {
   const [filters, setFilters] = useState({
     state: "",
     user: "",
@@ -153,23 +154,31 @@ export default function JobsDashboard({ dateParams }) {
   const [sort, setSort] = useState({ col: null, asc: true });
 
   const hasFilters = filters.state || filters.user || filters.partition;
-  const filterParams = new URLSearchParams(
-    Object.fromEntries(Object.entries(filters).filter(([, v]) => v)),
-  );
+  const fk = `${filters.state}_${filters.user}_${filters.partition}`;
 
-  const { data, loading, error } = useApi(
-    `/api/jobs?${dateParams}&${filterParams}`,
+  const { data, loading, error } = useRedivisQuery(
+    () => getJobs(startDate, endDate, filters),
+    `jobs_${startDate}_${endDate}_${fk}`,
   );
-  const { data: summary, loading: lSummary } = useApi(`/api/summary?${dateParams}`);
-  const { data: filteredSummary, loading: lFiltered } = useApi(
-    hasFilters ? `/api/summary?${dateParams}&${filterParams}` : null,
+  const { data: summary, loading: lSummary } = useRedivisQuery(
+    () => getSummary(startDate, endDate, {}),
+    `summary_${startDate}_${endDate}`,
   );
-  const { data: timeline, loading: lTimeline } = useApi(
-    `/api/timeline?${dateParams}&${filterParams}`,
+  const { data: filteredSummary, loading: lFiltered } = useRedivisQuery(
+    hasFilters ? () => getSummary(startDate, endDate, filters) : null,
+    hasFilters ? `fsummary_${startDate}_${endDate}_${fk}` : null,
   );
-  const { data: filterOptions, loading: lFilters } = useApi(`/api/filters?${dateParams}`);
-  const { data: waitTimes, loading: lWait } = useApi(
-    `/api/wait-times?${dateParams}&${filterParams}`,
+  const { data: timeline, loading: lTimeline } = useRedivisQuery(
+    () => getTimeline(startDate, endDate, filters),
+    `timeline_${startDate}_${endDate}_${fk}`,
+  );
+  const { data: filterOptions, loading: lFilters } = useRedivisQuery(
+    () => getFilterOptions(startDate, endDate),
+    `filters_${startDate}_${endDate}`,
+  );
+  const { data: waitTimes, loading: lWait } = useRedivisQuery(
+    () => getWaitTimes(startDate, endDate, filters),
+    `wait_${startDate}_${endDate}_${fk}`,
   );
 
   const queries = [loading, lSummary, lTimeline, lFilters, lWait, ...(hasFilters ? [lFiltered] : [])];
@@ -215,7 +224,7 @@ export default function JobsDashboard({ dateParams }) {
 
   const waitByDate = {};
   rawWait.forEach((r) => {
-    const d = typeof r.period === "number" ? new Date(r.period) : new Date(String(r.period).length === 10 ? r.period + "T00:00:00" : r.period);
+    const d = r.period instanceof Date ? r.period : typeof r.period === "number" ? new Date(r.period) : new Date(String(r.period).length === 10 ? r.period + "T00:00:00" : r.period);
     const key = isNaN(d.getTime()) ? String(r.period) : d.toISOString().slice(0, 10);
     waitByDate[key] = {
       avg: r.avg_wait_minutes != null ? +(r.avg_wait_minutes / waitDivisor).toFixed(1) : null,
@@ -228,6 +237,7 @@ export default function JobsDashboard({ dateParams }) {
 
   function parsePeriod(val) {
     if (val == null) return null;
+    if (val instanceof Date) return val;
     if (typeof val === "number") return new Date(val);
     const s = String(val);
     if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(s + "T00:00:00");
@@ -260,6 +270,7 @@ export default function JobsDashboard({ dateParams }) {
     const key = periodKey(r.period);
     return { date: key, label: formatPeriodLabel(r.period), count: r.count, ...waitByDate[key] };
   });
+
   return (
     <div className="space-y-6">
       <div className="flex gap-3 items-center">

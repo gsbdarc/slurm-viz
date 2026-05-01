@@ -1,8 +1,12 @@
-import { useApi } from "../hooks/useApi";
+import { useRedivisQuery } from "../hooks/useRedivisQuery";
+import { getSummary } from "../redivis/queries";
 import LoadingProgress from "./LoadingProgress";
 
-export default function SummaryCards({ dateParams }) {
-  const { data, loading, error } = useApi(`/api/summary?${dateParams}`);
+export default function SummaryCards({ startDate, endDate }) {
+  const { data, loading, error } = useRedivisQuery(
+    () => getSummary(startDate, endDate, {}),
+    `summary_${startDate}_${endDate}`,
+  );
 
   if (loading) return <LoadingProgress completed={0} total={1} label="Loading summary" details={[]} />;
   if (error) return <div className="text-spirited p-4">Error: {error}</div>;

@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { useApi } from "../hooks/useApi";
+import { useRedivisQuery } from "../hooks/useRedivisQuery";
+import { getUserSummaries, getUsersByPeriod, getFilterOptions } from "../redivis/queries";
 import LoadingProgress from "./LoadingProgress";
 import {
   BarChart,
@@ -103,16 +104,21 @@ function UserTable({ users }) {
   );
 }
 
-export default function UserDashboard({ dateParams }) {
+export default function UserDashboard({ startDate, endDate }) {
   const [partition, setPartition] = useState("");
 
-  const filterParams = partition ? `&partition=${partition}` : "";
-
-  const { data, loading, error } = useApi(`/api/users?${dateParams}${filterParams}`);
-  const { data: byPeriod, loading: lPeriod } = useApi(
-    `/api/users/by-period?${dateParams}${filterParams}`,
+  const { data: usersData, loading, error } = useRedivisQuery(
+    () => getUserSummaries(startDate, endDate, { partition: partition || undefined }),
+    `users_${startDate}_${endDate}_${partition}`,
   );
-  const { data: filterOptions } = useApi(`/api/filters?${dateParams}`);
+  const { data: byPeriod, loading: lPeriod } = useRedivisQuery(
+    () => getUsersByPeriod(startDate, endDate, { partition: partition || undefined }),
+    `usersPeriod_${startDate}_${endDate}_${partition}`,
+  );
+  const { data: filterOptions } = useRedivisQuery(
+    () => getFilterOptions(startDate, endDate),
+    `filters_${startDate}_${endDate}`,
+  );
 
   const queries = [loading, lPeriod];
   const total = queries.length;
@@ -120,15 +126,15 @@ export default function UserDashboard({ dateParams }) {
   const anyLoading = completed < total;
 
   const details = [];
-  if (data?.users?.length) details.push(`${data.users.length} users`);
-  if (byPeriod?.data?.length) details.push(`${byPeriod.data.length} period records`);
+  if (!loading && usersData?.length) details.push(`${usersData.length} users`);
+  if (!lPeriod && byPeriod?.data?.length) details.push(`${byPeriod.data.length} period records`);
   if (filterOptions?.partitions?.length) details.push(`${filterOptions.partitions.length} partitions`);
 
-  if (loading && !data)
+  if (loading && !usersData)
     return <LoadingProgress completed={completed} total={total} label="Loading users" details={details} />;
   if (error) return <div className="text-spirited p-4">Error: {error}</div>;
 
-  const users = data.users || [];
+  const users = usersData || [];
   const topByCpuHours = [...users].sort((a, b) => (b.cpu_hours || 0) - (a.cpu_hours || 0)).slice(0, 10);
   const topByJobCount = [...users].sort((a, b) => (b.job_count || 0) - (a.job_count || 0)).slice(0, 10);
 
@@ -140,6 +146,7 @@ export default function UserDashboard({ dateParams }) {
 
   function parsePeriod(val) {
     if (val == null) return null;
+    if (val instanceof Date) return val;
     if (typeof val === "number") return new Date(val);
     const s = String(val);
     if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(s + "T00:00:00");
@@ -203,7 +210,7 @@ export default function UserDashboard({ dateParams }) {
         )}
       </div>
 
-      {anyLoading && data && (
+      {anyLoading && usersData && (
         <LoadingProgress completed={completed} total={total} label="Updating results" details={details} />
       )}
 
