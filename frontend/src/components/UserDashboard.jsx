@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useRedivisQuery } from "../hooks/useRedivisQuery";
 import { getUserSummaries, getUsersByPeriod, getFilterOptions } from "../redivis/queries";
+import { formatUsd } from "../lib/ec2";
 import LoadingProgress from "./LoadingProgress";
 import {
   BarChart,
@@ -30,10 +31,13 @@ const USER_COLUMNS = [
   { key: "total_cpus", label: "Total CPUs", numeric: true },
   { key: "total_elapsed", label: "Elapsed (s)", numeric: true },
   { key: "cpu_hours", label: "CPU Hours", numeric: true },
+  { key: "ec2_cost_usd", label: "EC2 Cost", currency: true },
   { key: "total_wait_hours", label: "Queue Wait (hrs)", numeric: true },
 ];
 
-const numericUserCols = new Set(USER_COLUMNS.filter((c) => c.numeric).map((c) => c.key));
+const numericUserCols = new Set(
+  USER_COLUMNS.filter((c) => c.numeric || c.currency).map((c) => c.key),
+);
 
 function UserTable({ users }) {
   const [sort, setSort] = useState({ col: "cpu_hours", asc: false });
@@ -61,6 +65,7 @@ function UserTable({ users }) {
 
   const fmtVal = (col, val) => {
     if (val == null) return "—";
+    if (col.currency) return formatUsd(val);
     if (col.numeric && typeof val === "number")
       return val % 1 === 0 ? val.toLocaleString() : val.toFixed(1);
     return String(val);
@@ -104,16 +109,19 @@ function UserTable({ users }) {
   );
 }
 
-export default function UserDashboard({ startDate, endDate }) {
+export default function UserDashboard({ startDate, endDate, node }) {
   const [partition, setPartition] = useState("");
 
+  const filters = { partition: partition || undefined, node: node || undefined };
+  const fk = `${partition}_${node || ""}`;
+
   const { data: usersData, loading, error } = useRedivisQuery(
-    () => getUserSummaries(startDate, endDate, { partition: partition || undefined }),
-    `users_${startDate}_${endDate}_${partition}`,
+    () => getUserSummaries(startDate, endDate, filters),
+    `users_${startDate}_${endDate}_${fk}`,
   );
   const { data: byPeriod, loading: lPeriod } = useRedivisQuery(
-    () => getUsersByPeriod(startDate, endDate, { partition: partition || undefined }),
-    `usersPeriod_${startDate}_${endDate}_${partition}`,
+    () => getUsersByPeriod(startDate, endDate, filters),
+    `usersPeriod_${startDate}_${endDate}_${fk}`,
   );
   const { data: filterOptions } = useRedivisQuery(
     () => getFilterOptions(startDate, endDate),
@@ -137,6 +145,9 @@ export default function UserDashboard({ startDate, endDate }) {
   const users = usersData || [];
   const topByCpuHours = [...users].sort((a, b) => (b.cpu_hours || 0) - (a.cpu_hours || 0)).slice(0, 10);
   const topByJobCount = [...users].sort((a, b) => (b.job_count || 0) - (a.job_count || 0)).slice(0, 10);
+  const topByCost = [...users]
+    .sort((a, b) => (b.ec2_cost_usd || 0) - (a.ec2_cost_usd || 0))
+    .slice(0, 10);
 
   const periodRows = byPeriod?.data || [];
   const periodGranularity = byPeriod?.granularity || "month";
@@ -185,7 +196,8 @@ export default function UserDashboard({ startDate, endDate }) {
   );
   const periodLabel = periodGranularity === "day" ? "Day" : periodGranularity === "week" ? "Week" : "Month";
 
-  const partitionSuffix = partition ? ` (${partition})` : "";
+  const suffixParts = [partition, node].filter(Boolean);
+  const partitionSuffix = suffixParts.length ? ` (${suffixParts.join(", ")})` : "";
 
   return (
     <div className="space-y-6">
@@ -254,6 +266,23 @@ export default function UserDashboard({ startDate, endDate }) {
           </div>
         )}
       </div>
+
+      {topByCost.length > 0 && topByCost[0].ec2_cost_usd != null && (
+        <div className="bg-white rounded-lg shadow border border-black-20 p-4">
+          <h3 className="text-lg font-semibold text-black-su mb-3">
+            Top Users by EC2 Cost{partitionSuffix}
+          </h3>
+          <ResponsiveContainer width="100%" height={400}>
+            <BarChart data={topByCost} layout="vertical" margin={{ left: 10 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis type="number" tickFormatter={formatUsd} />
+              <YAxis dataKey="User" type="category" width={120} tick={{ fontSize: 13 }} />
+              <Tooltip formatter={(v) => formatUsd(v)} />
+              <Bar dataKey="ec2_cost_usd" fill="#E98300" name="EC2 Cost" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
 
       {periodData.length > 0 && (
         <div className="bg-white rounded-lg shadow border border-black-20 p-4">

@@ -1,11 +1,12 @@
 import { useRedivisQuery } from "../hooks/useRedivisQuery";
 import { getSummary } from "../redivis/queries";
+import { formatUsd, PRICING_DISCLOSURE } from "../lib/ec2";
 import LoadingProgress from "./LoadingProgress";
 
-export default function SummaryCards({ startDate, endDate }) {
+export default function SummaryCards({ startDate, endDate, node }) {
   const { data, loading, error } = useRedivisQuery(
-    () => getSummary(startDate, endDate, {}),
-    `summary_${startDate}_${endDate}`,
+    () => getSummary(startDate, endDate, { node }),
+    `summary_${startDate}_${endDate}_${node || ""}`,
   );
 
   if (loading) return <LoadingProgress completed={0} total={1} label="Loading summary" details={[]} />;
@@ -15,28 +16,38 @@ export default function SummaryCards({ startDate, endDate }) {
     { label: "Total Jobs", value: data.total_jobs?.toLocaleString() },
     { label: "Unique Users", value: data.unique_users },
     { label: "Partitions", value: data.unique_partitions },
+    { label: "EC2 Equivalent", value: formatUsd(data.total_ec2_cost_usd) },
   ];
 
   if (data.state_counts) {
     Object.entries(data.state_counts)
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
+      .slice(0, 4)
       .forEach(([state, count]) => {
         cards.push({ label: state, value: count.toLocaleString() });
       });
   }
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 mb-6">
-      {cards.map((c) => (
-        <div
-          key={c.label}
-          className="bg-white rounded-lg shadow border border-black-20 p-3 text-center"
-        >
-          <div className="text-xl font-bold text-black-su">{c.value}</div>
-          <div className="text-xs text-black-60 mt-1">{c.label}</div>
-        </div>
-      ))}
+    <div className="mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
+        {cards.map((c) => (
+          <div
+            key={c.label}
+            className="bg-white rounded-lg shadow border border-black-20 p-3 text-center"
+          >
+            <div className="text-xl font-bold text-black-su">{c.value}</div>
+            <div className="text-xs text-black-60 mt-1">{c.label}</div>
+          </div>
+        ))}
+      </div>
+      <p className="text-xs text-black-60 mt-2 leading-snug">{PRICING_DISCLOSURE}</p>
+      {node && (
+        <p className="text-xs text-black-60 mt-1 leading-snug">
+          Filtered to <span className="font-medium">{node}</span>. Multi-node jobs are counted in
+          full for every node they touched, so per-node figures do not sum to the cluster total.
+        </p>
+      )}
     </div>
   );
 }

@@ -4,6 +4,8 @@ import SummaryCards from "./components/SummaryCards";
 import JobsDashboard from "./components/JobsDashboard";
 import ClusterDashboard from "./components/ClusterDashboard";
 import UserDashboard from "./components/UserDashboard";
+import { useRedivisQuery } from "./hooks/useRedivisQuery";
+import { getFilterOptions } from "./redivis/queries";
 
 const TABS = [
   { id: "jobs", label: "Jobs" },
@@ -128,15 +130,60 @@ function DateRangePicker({ startDate, endDate, onChange }) {
   );
 }
 
+function NodePicker({ nodes, node, onChange, loading }) {
+  return (
+    <div className="flex items-center gap-2">
+      <select
+        className="border border-black-20 rounded px-3 py-1.5 text-sm bg-white"
+        value={node}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={loading}
+      >
+        <option value="">{loading ? "Loading nodes..." : "All nodes"}</option>
+        {nodes.map((n) => (
+          <option key={n} value={n}>
+            {n}
+          </option>
+        ))}
+      </select>
+      {node && (
+        <button
+          onClick={() => onChange("")}
+          className="text-sm text-black-60 hover:text-black-su px-2"
+        >
+          Clear
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [tab, setTab] = useState("jobs");
   const [startDate, setStartDate] = useState(daysAgo(30));
   const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10));
+  const [node, setNode] = useState("");
   const [authed, setAuthed] = useState(null);
 
   useEffect(() => {
     redivis.isAuthorized().then(setAuthed);
   }, []);
+
+  // Shares a cache key with the per-tab calls, so this adds no extra query.
+  const { data: filterOptions, loading: loadingFilters } = useRedivisQuery(
+    authed ? () => getFilterOptions(startDate, endDate) : null,
+    authed ? `filters_${startDate}_${endDate}` : null,
+  );
+
+  const nodes = filterOptions?.nodes || [];
+
+  // Node lists are scoped to the date range — a node selected for one range may not exist in the
+  // next, which would silently show zero jobs.
+  const handleDateChange = (s, e) => {
+    setStartDate(s);
+    setEndDate(e);
+    setNode("");
+  };
 
   return (
     <div className="min-h-screen bg-fog-light font-sans">
@@ -190,23 +237,26 @@ export default function App() {
       {authed && (
         <>
           <div className="sticky top-0 z-10 bg-fog-light border-b border-black-20 shadow-sm">
-            <div className="max-w-7xl mx-auto px-4 py-3">
+            <div className="max-w-7xl mx-auto px-4 py-3 flex items-center gap-4 flex-wrap">
               <DateRangePicker
                 startDate={startDate}
                 endDate={endDate}
-                onChange={(s, e) => {
-                  setStartDate(s);
-                  setEndDate(e);
-                }}
+                onChange={handleDateChange}
+              />
+              <NodePicker
+                nodes={nodes}
+                node={node}
+                onChange={setNode}
+                loading={loadingFilters}
               />
             </div>
           </div>
 
           <main className="max-w-7xl mx-auto px-4 py-4">
-            <SummaryCards startDate={startDate} endDate={endDate} />
-            {tab === "jobs" && <JobsDashboard startDate={startDate} endDate={endDate} />}
-            {tab === "cluster" && <ClusterDashboard startDate={startDate} endDate={endDate} />}
-            {tab === "users" && <UserDashboard startDate={startDate} endDate={endDate} />}
+            <SummaryCards startDate={startDate} endDate={endDate} node={node} />
+            {tab === "jobs" && <JobsDashboard startDate={startDate} endDate={endDate} node={node} />}
+            {tab === "cluster" && <ClusterDashboard startDate={startDate} endDate={endDate} node={node} />}
+            {tab === "users" && <UserDashboard startDate={startDate} endDate={endDate} node={node} />}
           </main>
         </>
       )}

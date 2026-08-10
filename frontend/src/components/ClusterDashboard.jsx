@@ -39,10 +39,10 @@ function fmtDuration(seconds) {
   return `${d}d ${h % 24}h`;
 }
 
-export default function ClusterDashboard({ startDate, endDate }) {
+export default function ClusterDashboard({ startDate, endDate, node }) {
   const { data, loading, error } = useRedivisQuery(
-    () => getClusterUtilization(startDate, endDate),
-    `cluster_${startDate}_${endDate}`,
+    () => getClusterUtilization(startDate, endDate, { node }),
+    `cluster_${startDate}_${endDate}_${node || ""}`,
   );
 
   const details = [];
