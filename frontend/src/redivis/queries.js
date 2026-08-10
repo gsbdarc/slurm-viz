@@ -6,26 +6,37 @@ const dataset = redivis.organization("StanfordGSBSandbox").dataset("slurm_stats"
 const CACHE_TTL = 300_000;
 
 /**
- * Tie-break for picking one row per JobID.
+ * Collapsing the dump's periodic snapshots down to one row per job.
  *
- * The dump holds periodic snapshots, so a long-running job appears many times with a growing
- * `ElapsedRaw`. For those rows `End` is NULL and `Start`/`Submit` are identical, so ordering on
- * those three alone is a total tie and ROW_NUMBER picks arbitrarily — the same job would report
- * wildly different runtimes (and therefore costs) from one query to the next.
+ * PARTITION — keyed on (JobID, Submit), not JobID alone. The Yen's JobID counter was reset to 1 in
+ * January 2026, and as of August 2026 it has climbed back into the range the pre-reset data still
+ * occupies (434,400–1,030,357). Keying on JobID alone would silently discard one of any two
+ * genuinely different jobs that land on the same ID, and the counter has ~595k previously-used IDs
+ * still ahead of it. `Submit` separates them: it is fixed at submission and the two eras are ~a
+ * year apart, while snapshots of a single job all share it exactly.
  *
- * `End DESC NULLS LAST` prefers a finished record over a mid-flight snapshot; `ElapsedRaw DESC`
- * then picks the freshest snapshot of a job that is still running. `TO_JSON_STRING` is a final
- * deterministic key so byte-identical duplicates can't reorder between queries either.
+ * ORDER — a long-running job appears many times with a growing `ElapsedRaw`. For those rows `End`
+ * is NULL and `Start`/`Submit` are identical, so ordering on those three alone is a total tie and
+ * ROW_NUMBER picks arbitrarily; the same job would then report wildly different runtimes (and
+ * therefore costs) from one query to the next. `End DESC NULLS LAST` prefers a finished record over
+ * a mid-flight snapshot, `ElapsedRaw DESC` takes the freshest snapshot of a job still running, and
+ * `TO_JSON_STRING` is a final deterministic key so byte-identical duplicates can't reorder either.
+ *
+ * Known edge: 154 JobIDs have rows whose `Submit` differs (by up to 39 days) — most likely
+ * requeues. These are kept as separate jobs rather than collapsed.
  */
+const DEDUP_PARTITION = "`JobID`, `Submit`";
 const DEDUP_ORDER =
   "`End` DESC NULLS LAST, `ElapsedRaw` DESC NULLS LAST, " +
-  "`Start` DESC NULLS LAST, `Submit` DESC NULLS LAST, TO_JSON_STRING(t)";
+  "`Start` DESC NULLS LAST, TO_JSON_STRING(t)";
 
 function dedupCte(derivedColumns = "") {
   return `jobs AS (
     SELECT *${derivedColumns}
     FROM (
-        SELECT *, ROW_NUMBER() OVER (PARTITION BY \`JobID\` ORDER BY ${DEDUP_ORDER}) AS _rn
+        SELECT *, ROW_NUMBER() OVER (
+            PARTITION BY ${DEDUP_PARTITION} ORDER BY ${DEDUP_ORDER}
+        ) AS _rn
         FROM \`${TABLE_NAME}\` AS t
     ) WHERE _rn = 1
 )`;
