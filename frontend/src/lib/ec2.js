@@ -7,8 +7,15 @@
  * `CASE` expression emitted by `ec2RateSqlExpr()` — both read `EC2_CATALOG`, so there is no
  * second price list to drift out of sync.
  *
- * PRICES ARE HARDCODED and must be re-checked periodically against
- * https://aws.amazon.com/ec2/pricing/on-demand/ (Linux, on-demand, no savings plan).
+ * PRICES ARE HARDCODED. Every entry below (price, vCPU, memory) was checked against AWS's own
+ * on-demand price feed for us-west-2 Linux on PRICING_AS_OF. To re-check after bumping that date:
+ *
+ *   curl -s --compressed -o ondemand.json \
+ *     'https://b0.p.awsstatic.com/pricing/2.0/meteredUnitMaps/ec2/USD/current/ec2-ondemand-without-sec-sel/US%20West%20(Oregon)/Linux/index.json'
+ *
+ * then compare `Instance Type` / `price` / `vCPU` / `Memory` against EC2_CATALOG. The feed carries
+ * no GPU count, so the `gpus` and `gpuType` fields are from the published instance specs
+ * (https://aws.amazon.com/ec2/instance-types/) and are not covered by that check.
  */
 
 export const PRICING_REGION = "us-west-2";
@@ -63,7 +70,7 @@ export const EC2_CATALOG = [
 
   // high memory
   { type: "x2idn.16xlarge", vcpu: 64, memGb: 1024, gpus: 0, gpuType: null, usdPerHour: 6.669 },
-  { type: "x2idn.24xlarge", vcpu: 96, memGb: 1536, gpus: 0, gpuType: null, usdPerHour: 10.003 },
+  { type: "x2idn.24xlarge", vcpu: 96, memGb: 1536, gpus: 0, gpuType: null, usdPerHour: 10.0035 },
   { type: "x2idn.32xlarge", vcpu: 128, memGb: 2048, gpus: 0, gpuType: null, usdPerHour: 13.338 },
 
   // GPU
@@ -75,8 +82,8 @@ export const EC2_CATALOG = [
   { type: "g5.12xlarge", vcpu: 48, memGb: 192, gpus: 4, gpuType: "A10G", usdPerHour: 5.672 },
   { type: "g5.24xlarge", vcpu: 96, memGb: 384, gpus: 4, gpuType: "A10G", usdPerHour: 8.144 },
   { type: "g5.48xlarge", vcpu: 192, memGb: 768, gpus: 8, gpuType: "A10G", usdPerHour: 16.288 },
-  { type: "p4d.24xlarge", vcpu: 96, memGb: 1152, gpus: 8, gpuType: "A100 40GB", usdPerHour: 32.7726 },
-  { type: "p5.48xlarge", vcpu: 192, memGb: 2048, gpus: 8, gpuType: "H100 80GB", usdPerHour: 98.32 },
+  { type: "p4d.24xlarge", vcpu: 96, memGb: 1152, gpus: 8, gpuType: "A100 40GB", usdPerHour: 21.95764 },
+  { type: "p5.48xlarge", vcpu: 192, memGb: 2048, gpus: 8, gpuType: "H100 80GB", usdPerHour: 55.04 },
 ];
 
 /** Catalog sorted cheapest-first — the scan order for both the JS fit and the generated SQL. */
