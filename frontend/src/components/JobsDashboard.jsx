@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useRedivisQuery } from "../hooks/useRedivisQuery";
 import { getSummary, getJobs, getTimeline, getFilterOptions, getWaitTimes } from "../redivis/queries";
+import { jobCost, formatUsd } from "../lib/ec2";
 import LoadingProgress from "./LoadingProgress";
 import {
   BarChart,
@@ -22,12 +23,13 @@ function MiniCards({ data, label }) {
     { label: "Total Jobs", value: data.total_jobs?.toLocaleString() },
     { label: "Unique Users", value: data.unique_users },
     { label: "Partitions", value: data.unique_partitions },
+    { label: "EC2 Equivalent", value: formatUsd(data.total_ec2_cost_usd) },
   ];
 
   if (data.state_counts) {
     Object.entries(data.state_counts)
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
+      .slice(0, 4)
       .forEach(([state, count]) => {
         cards.push({ label: state, value: count.toLocaleString() });
       });
@@ -61,6 +63,9 @@ const JOB_COLUMNS = [
   { key: "State", label: "State" },
   { key: "NCPUS", label: "CPUs", numeric: true },
   { key: "ReqMem_GB", label: "Memory (GB)", numeric: true },
+  { key: "gpu_count", label: "GPUs", numeric: true },
+  { key: "ec2_cost_usd", label: "EC2 Cost", currency: true },
+  { key: "ec2_instance", label: "EC2 Instance" },
   { key: "wait_seconds", label: "Queue Wait (s)", numeric: true },
   { key: "ElapsedRaw", label: "Elapsed (s)", numeric: true },
   { key: "Submit", label: "Submit", date: true },
@@ -84,7 +89,7 @@ function JobTable({ data, sort, setSort }) {
     if (av == null) return 1;
     if (bv == null) return -1;
     const meta = colMeta[sort.col] || {};
-    if (meta.numeric) {
+    if (meta.numeric || meta.currency) {
       const na = Number(av), nb = Number(bv);
       return sort.asc ? na - nb : nb - na;
     }
@@ -99,10 +104,13 @@ function JobTable({ data, sort, setSort }) {
 
   const fmtVal = (col, val) => {
     if (val == null) return "—";
+    if (col.currency) return formatUsd(val);
     if (col.numeric && typeof val === "number")
       return val % 1 === 0 ? val.toLocaleString() : val.toFixed(2);
     return String(val);
   };
+
+  const anyOversized = sorted.some((j) => j.ec2_oversized);
 
   return (
     <div className="bg-white rounded-lg shadow border border-black-20 overflow-hidden">
@@ -111,6 +119,13 @@ function JobTable({ data, sort, setSort }) {
           Jobs ({data.total?.toLocaleString()} total, showing{" "}
           {data.jobs?.length})
         </h3>
+        <p className="text-xs text-black-60 mt-1">
+          EC2 cost across all {data.total?.toLocaleString()} matching jobs:{" "}
+          <span className="font-medium text-black-su">
+            {formatUsd(data.total_ec2_cost_usd)}
+          </span>
+          {anyOversized && " · † job exceeds every catalog instance; cost shown is a lower bound"}
+        </p>
       </div>
       <div className="overflow-x-auto max-h-96">
         <table className="w-full text-sm text-left">
@@ -145,24 +160,30 @@ function JobTable({ data, sort, setSort }) {
   );
 }
 
-export default function JobsDashboard({ startDate, endDate }) {
-  const [filters, setFilters] = useState({
+export default function JobsDashboard({ startDate, endDate, node }) {
+  const [localFilters, setLocalFilters] = useState({
     state: "",
     user: "",
     partition: "",
   });
   const [sort, setSort] = useState({ col: null, asc: true });
 
-  const hasFilters = filters.state || filters.user || filters.partition;
-  const fk = `${filters.state}_${filters.user}_${filters.partition}`;
+  // `node` is a global filter owned by App; the rest are local to this tab. The summary strip
+  // above already reflects `node`, so only the local filters justify a second "Filtered" row —
+  // otherwise it would restate the same numbers.
+  const filters = { ...localFilters, node };
+  const hasFilters = Boolean(
+    localFilters.state || localFilters.user || localFilters.partition,
+  );
+  const fk = `${localFilters.state}_${localFilters.user}_${localFilters.partition}_${node || ""}`;
 
   const { data, loading, error } = useRedivisQuery(
     () => getJobs(startDate, endDate, filters),
     `jobs_${startDate}_${endDate}_${fk}`,
   );
   const { data: summary, loading: lSummary } = useRedivisQuery(
-    () => getSummary(startDate, endDate, {}),
-    `summary_${startDate}_${endDate}`,
+    () => getSummary(startDate, endDate, { node }),
+    `summary_${startDate}_${endDate}_${node || ""}`,
   );
   const { data: filteredSummary, loading: lFiltered } = useRedivisQuery(
     hasFilters ? () => getSummary(startDate, endDate, filters) : null,
@@ -206,6 +227,7 @@ export default function JobsDashboard({ startDate, endDate }) {
     filters.user && `user: ${filters.user}`,
     filters.state && `state: ${filters.state}`,
     filters.partition && `partition: ${filters.partition}`,
+    node && `node: ${node}`,
   ].filter(Boolean);
   const filterSuffix = filterParts.length > 0 ? ` (${filterParts.join(", ")})` : "";
 
@@ -271,13 +293,30 @@ export default function JobsDashboard({ startDate, endDate }) {
     return { date: key, label: formatPeriodLabel(r.period), count: r.count, ...waitByDate[key] };
   });
 
+  // Priced client-side from the same CPU / RAM / GPU columns the SQL aggregate uses, so the
+  // per-row figures and the total agree by construction.
+  const jobsWithCost = (data?.jobs || []).map((job) => {
+    const cost = jobCost({
+      cpus: job.NCPUS,
+      memGb: job.ReqMem_GB,
+      gpus: job.gpu_count,
+      elapsedSeconds: job.ElapsedRaw,
+    });
+    return {
+      ...job,
+      ec2_cost_usd: cost.costUsd,
+      ec2_instance: cost.oversized ? `${cost.instanceType} †` : cost.instanceType,
+      ec2_oversized: cost.oversized,
+    };
+  });
+
   return (
     <div className="space-y-6">
       <div className="flex gap-3 items-center">
         <select
           className="border border-black-20 rounded px-3 py-1.5 text-sm bg-white"
-          value={filters.state}
-          onChange={(e) => setFilters({ ...filters, state: e.target.value })}
+          value={localFilters.state}
+          onChange={(e) => setLocalFilters({ ...localFilters, state: e.target.value })}
         >
           <option value="">All states</option>
           {(filterOptions?.states || []).map((s) => (
@@ -288,8 +327,8 @@ export default function JobsDashboard({ startDate, endDate }) {
         </select>
         <select
           className="border border-black-20 rounded px-3 py-1.5 text-sm bg-white"
-          value={filters.user}
-          onChange={(e) => setFilters({ ...filters, user: e.target.value })}
+          value={localFilters.user}
+          onChange={(e) => setLocalFilters({ ...localFilters, user: e.target.value })}
         >
           <option value="">All users</option>
           {(filterOptions?.users || []).map((u) => (
@@ -300,9 +339,9 @@ export default function JobsDashboard({ startDate, endDate }) {
         </select>
         <select
           className="border border-black-20 rounded px-3 py-1.5 text-sm bg-white"
-          value={filters.partition}
+          value={localFilters.partition}
           onChange={(e) =>
-            setFilters({ ...filters, partition: e.target.value })
+            setLocalFilters({ ...localFilters, partition: e.target.value })
           }
         >
           <option value="">All partitions</option>
@@ -314,7 +353,7 @@ export default function JobsDashboard({ startDate, endDate }) {
         </select>
         {hasFilters && (
           <button
-            onClick={() => setFilters({ state: "", user: "", partition: "" })}
+            onClick={() => setLocalFilters({ state: "", user: "", partition: "" })}
             className="text-sm text-black-60 hover:text-black-su px-2"
           >
             Clear
@@ -368,7 +407,11 @@ export default function JobsDashboard({ startDate, endDate }) {
         </div>
       )}
 
-      <JobTable data={data} sort={sort} setSort={setSort} />
+      <JobTable
+        data={{ ...data, jobs: jobsWithCost }}
+        sort={sort}
+        setSort={setSort}
+      />
       </>}
     </div>
   );
