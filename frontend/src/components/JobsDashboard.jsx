@@ -168,10 +168,12 @@ export default function JobsDashboard({ startDate, endDate, node }) {
   });
   const [sort, setSort] = useState({ col: null, asc: true });
 
-  // `node` is a global filter owned by App; the rest are local to this tab.
+  // `node` is a global filter owned by App; the rest are local to this tab. The summary strip
+  // above already reflects `node`, so only the local filters justify a second "Filtered" row —
+  // otherwise it would restate the same numbers.
   const filters = { ...localFilters, node };
   const hasFilters = Boolean(
-    localFilters.state || localFilters.user || localFilters.partition || node,
+    localFilters.state || localFilters.user || localFilters.partition,
   );
   const fk = `${localFilters.state}_${localFilters.user}_${localFilters.partition}_${node || ""}`;
 
@@ -349,19 +351,13 @@ export default function JobsDashboard({ startDate, endDate, node }) {
             </option>
           ))}
         </select>
-        {(localFilters.state || localFilters.user || localFilters.partition) && (
+        {hasFilters && (
           <button
             onClick={() => setLocalFilters({ state: "", user: "", partition: "" })}
             className="text-sm text-black-60 hover:text-black-su px-2"
           >
             Clear
           </button>
-        )}
-        {node && (
-          <span className="text-sm text-black-60">
-            Node <span className="font-medium text-black-su">{node}</span> (cleared from the
-            top bar)
-          </span>
         )}
       </div>
 

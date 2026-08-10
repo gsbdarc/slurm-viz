@@ -177,13 +177,12 @@ export default function App() {
 
   const nodes = filterOptions?.nodes || [];
 
-  // Node lists are scoped to the date range — a node selected for one range may not exist in the
-  // next, which would silently show zero jobs.
-  const handleDateChange = (s, e) => {
-    setStartDate(s);
-    setEndDate(e);
-    setNode("");
-  };
+  // Node lists are scoped to the date range. Keep the selection when the node still ran in the new
+  // range (the common case when widening it), and drop it only when it didn't — otherwise the
+  // dropdown would sit on a node with no jobs and every panel would read zero.
+  useEffect(() => {
+    if (node && filterOptions && !nodes.includes(node)) setNode("");
+  }, [node, filterOptions, nodes]);
 
   return (
     <div className="min-h-screen bg-fog-light font-sans">
@@ -241,7 +240,10 @@ export default function App() {
               <DateRangePicker
                 startDate={startDate}
                 endDate={endDate}
-                onChange={handleDateChange}
+                onChange={(s, e) => {
+                  setStartDate(s);
+                  setEndDate(e);
+                }}
               />
               <NodePicker
                 nodes={nodes}

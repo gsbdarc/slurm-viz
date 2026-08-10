@@ -41,13 +41,18 @@ export default function SummaryCards({ startDate, endDate, node }) {
           </div>
         ))}
       </div>
-      <p className="text-xs text-black-60 mt-2 leading-snug">{PRICING_DISCLOSURE}</p>
-      {node && (
-        <p className="text-xs text-black-60 mt-1 leading-snug">
-          Filtered to <span className="font-medium">{node}</span>. Multi-node jobs are counted in
-          full for every node they touched, so per-node figures do not sum to the cluster total.
-        </p>
-      )}
+      <details className="mt-2 text-xs text-black-60">
+        <summary className="cursor-pointer select-none hover:text-black-su w-fit">
+          How the EC2 equivalent is estimated
+        </summary>
+        <p className="mt-1 leading-snug max-w-4xl">{PRICING_DISCLOSURE}</p>
+        {node && (
+          <p className="mt-1 leading-snug max-w-4xl">
+            Multi-node jobs are counted in full for every node they touched, so per-node figures do
+            not sum to the cluster total.
+          </p>
+        )}
+      </details>
     </div>
   );
 }

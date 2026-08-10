@@ -118,12 +118,20 @@ export function fitInstance({ cpus, memGb, gpus } = {}) {
 /**
  * Price one job.
  *
+ * Failed, cancelled, and timed-out jobs are priced like any other: they occupied a machine for
+ * their elapsed time, and on EC2 that time is billed regardless of exit code.
+ *
+ * A job that never ran (PENDING, or cancelled while queued) has zero elapsed time and costs
+ * nothing — the 60-second minimum applies to an instance you actually launched, so applying it
+ * here would invent a charge for a machine that was never started.
+ *
  * `memGb` may be null when ReqMem failed to parse; the fit then falls back to CPU/GPU only and
  * `memUnknown` is set so the UI can flag it rather than quietly understating the cost.
  */
 export function jobCost({ cpus, memGb, gpus, elapsedSeconds } = {}) {
   const { instance, oversized } = fitInstance({ cpus, memGb, gpus });
-  const seconds = Math.max(Number(elapsedSeconds) || 0, MIN_BILLED_SECONDS);
+  const elapsed = Number(elapsedSeconds) || 0;
+  const seconds = elapsed > 0 ? Math.max(elapsed, MIN_BILLED_SECONDS) : 0;
   const hours = seconds / 3600;
   return {
     instanceType: instance.type,
@@ -184,7 +192,10 @@ export function ec2RateSqlExpr({ cpuExpr, memExpr, gpuExpr }) {
  */
 export function ec2CostSqlExpr({ cpuExpr, memExpr, gpuExpr, elapsedExpr }) {
   const rate = ec2RateSqlExpr({ cpuExpr, memExpr, gpuExpr });
-  return `(${rate}) * GREATEST(IFNULL(${elapsedExpr}, 0), ${MIN_BILLED_SECONDS}) / 3600`;
+  // Jobs that never ran cost nothing; see jobCost() for why the floor doesn't apply to them.
+  const seconds = `CASE WHEN IFNULL(${elapsedExpr}, 0) > 0
+      THEN GREATEST(${elapsedExpr}, ${MIN_BILLED_SECONDS}) ELSE 0 END`;
+  return `(${rate}) * (${seconds}) / 3600`;
 }
 
 /** Shared disclosure text — rendered wherever a cost is shown. */

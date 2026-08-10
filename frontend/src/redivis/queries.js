@@ -5,12 +5,33 @@ const TABLE_NAME = "yen_sacct_dump";
 const dataset = redivis.organization("StanfordGSBSandbox").dataset("slurm_stats");
 const CACHE_TTL = 300_000;
 
-const DEDUP_CTE = `jobs AS (
-    SELECT * FROM (
-        SELECT *, ROW_NUMBER() OVER (PARTITION BY \`JobID\` ORDER BY \`End\` DESC, \`Start\` DESC, \`Submit\` DESC) AS _rn
-        FROM \`${TABLE_NAME}\`
+/**
+ * Tie-break for picking one row per JobID.
+ *
+ * The dump holds periodic snapshots, so a long-running job appears many times with a growing
+ * `ElapsedRaw`. For those rows `End` is NULL and `Start`/`Submit` are identical, so ordering on
+ * those three alone is a total tie and ROW_NUMBER picks arbitrarily — the same job would report
+ * wildly different runtimes (and therefore costs) from one query to the next.
+ *
+ * `End DESC NULLS LAST` prefers a finished record over a mid-flight snapshot; `ElapsedRaw DESC`
+ * then picks the freshest snapshot of a job that is still running. `TO_JSON_STRING` is a final
+ * deterministic key so byte-identical duplicates can't reorder between queries either.
+ */
+const DEDUP_ORDER =
+  "`End` DESC NULLS LAST, `ElapsedRaw` DESC NULLS LAST, " +
+  "`Start` DESC NULLS LAST, `Submit` DESC NULLS LAST, TO_JSON_STRING(t)";
+
+function dedupCte(derivedColumns = "") {
+  return `jobs AS (
+    SELECT *${derivedColumns}
+    FROM (
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY \`JobID\` ORDER BY ${DEDUP_ORDER}) AS _rn
+        FROM \`${TABLE_NAME}\` AS t
     ) WHERE _rn = 1
 )`;
+}
+
+const DEDUP_CTE = dedupCte();
 
 const queryCache = new Map();
 
@@ -154,13 +175,7 @@ async function sqlFragments() {
 
   return {
     tresColumn,
-    cte: `jobs AS (
-    SELECT *, ${REQ_MEM_GB_SQL} AS _mem_gb, ${gpuCount} AS _gpu_count
-    FROM (
-        SELECT *, ROW_NUMBER() OVER (PARTITION BY \`JobID\` ORDER BY \`End\` DESC, \`Start\` DESC, \`Submit\` DESC) AS _rn
-        FROM \`${TABLE_NAME}\`
-    ) WHERE _rn = 1
-)`,
+    cte: dedupCte(`, ${REQ_MEM_GB_SQL} AS _mem_gb, ${gpuCount} AS _gpu_count`),
     ec2Cost: ec2CostSqlExpr({
       cpuExpr: "`NCPUS`",
       memExpr: "`_mem_gb`",
@@ -198,8 +213,11 @@ function expandNodelist(nodelist) {
       nodes.add(trimmed);
     }
   }
-  nodes.delete("");
-  nodes.delete("None");
+  // sacct writes "None assigned" (and plain "None") for jobs that never landed on a node; those
+  // are placeholders, not machines, and must not show up as options in the node filter.
+  for (const n of nodes) {
+    if (n === "" || n === "None" || n.startsWith("None assigned")) nodes.delete(n);
+  }
   return nodes;
 }
 
