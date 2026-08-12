@@ -513,27 +513,48 @@ function filterKey(filters = {}) {
 // Queries
 // ---------------------------------------------------------------------------
 
-export async function getFilterOptions(cluster, start, end) {
+/**
+ * Options for the filter controls, narrowed by whichever global filters are already active.
+ *
+ * Each list is scoped by the *other* filters but never by itself, the usual faceted-search rule:
+ * with a group selected, the user and partition lists should offer only that group's users and
+ * partitions, matching the Unique Users and Partitions tiles.
+ *
+ * The **group list is deliberately never narrowed**. It feeds a plain `<select>`, so if it listed
+ * only the group already chosen there would be no way to switch away. The node list is narrowed by
+ * group, which is safe for the opposite reason: its control is a free-text combobox, and filtering
+ * matches a typed name whether or not the list offers it.
+ *
+ * Only the global filters (`group`, `node`) participate. The per-tab state/user/partition controls
+ * are left out on purpose, so the lists do not shift underfoot as they are used and all four tabs
+ * keep sharing one cached result.
+ */
+export async function getFilterOptions(cluster, start, end, filters = {}) {
   const c = cols(cluster);
+  const { group, node } = filters;
   const dc = dateClause(cluster, start, end);
-  const base = ck(cluster, "filters", start, end);
+  const base = ck(cluster, "filters", start, end, group || "", node || "");
   const cte = plainCte(cluster);
-
   const part = partitionRef(cluster);
+
+  const [context, groupScoped] = await Promise.all([
+    buildWhere(cluster, start, end, { group, node }),
+    buildWhere(cluster, start, end, { group }),
+  ]);
 
   const [users, partitions, states, groups, nodeNames] = await Promise.all([
     runQuery(
       cluster,
       `WITH ${cte}
        SELECT DISTINCT ${c.user} AS val FROM jobs
-       WHERE ${dc} AND ${c.user} IS NOT NULL ORDER BY val`,
+       WHERE ${context} AND ${c.user} IS NOT NULL ORDER BY val`,
       `${base}_users`,
     ),
     runQuery(
       cluster,
       `WITH ${cte}
        SELECT DISTINCT ${part} AS val FROM jobs
-       WHERE ${dc} AND ${c.partition} IS NOT NULL ORDER BY val`,
+       WHERE ${context} AND ${c.partition} IS NOT NULL ORDER BY val`,
       `${base}_partitions`,
     ),
     cluster.features.jobStates
@@ -546,7 +567,7 @@ export async function getFilterOptions(cluster, start, end) {
                WHEN ${c.state} LIKE 'CANCELLED%' THEN 'CANCELLED'
                ELSE ${c.state}
            END AS val
-       FROM jobs WHERE ${dc} ORDER BY val`,
+       FROM jobs WHERE ${context} ORDER BY val`,
           `${base}_states`,
         )
       : Promise.resolve([]),
@@ -556,10 +577,10 @@ export async function getFilterOptions(cluster, start, end) {
           `WITH ${cte}
        SELECT DISTINCT ${c.group} AS val FROM jobs
        WHERE ${dc} AND ${c.group} IS NOT NULL ORDER BY val`,
-          `${base}_groups`,
+          ck(cluster, "filters", start, end, "groups"),
         )
       : Promise.resolve([]),
-    getNodeNames(cluster, start, end),
+    getNodeNames(cluster, start, end, groupScoped),
   ]);
 
   return {

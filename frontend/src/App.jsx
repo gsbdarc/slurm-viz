@@ -286,8 +286,8 @@ export default function App() {
 
   // Shares a cache key with the per-tab calls, so this adds no extra query.
   const { data: filterOptions, loading: loadingFilters } = useRedivisQuery(
-    authed ? () => getFilterOptions(clusterConfig, startDate, endDate) : null,
-    authed ? ck(clusterConfig, "filters", startDate, endDate) : null,
+    authed ? () => getFilterOptions(clusterConfig, startDate, endDate, { group, node }) : null,
+    authed ? ck(clusterConfig, "filters", startDate, endDate, group || "", node || "") : null,
   );
 
   // How much of the record the sampler actually caught, for the range and filters on screen. Only

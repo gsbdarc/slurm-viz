@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRedivisQuery } from "../hooks/useRedivisQuery";
 import { getGroupSummaries, getFilterOptions, ck } from "../redivis/queries";
 import { formatUsd } from "../lib/ec2";
@@ -118,9 +118,16 @@ export default function GroupDashboard({ cluster, startDate, endDate, node, grou
     ck(cluster, "groups", startDate, endDate, fk),
   );
   const { data: filterOptions } = useRedivisQuery(
-    () => getFilterOptions(cluster, startDate, endDate),
-    ck(cluster, "filters", startDate, endDate),
+    () => getFilterOptions(cluster, startDate, endDate, { group, node }),
+    ck(cluster, "filters", startDate, endDate, group || "", node || ""),
   );
+
+  // The partition list narrows with the global filters, so a selection can stop existing.
+  useEffect(() => {
+    if (partition && filterOptions && !filterOptions.partitions.includes(partition)) {
+      setPartition("");
+    }
+  }, [partition, filterOptions]);
 
   const details = [];
   if (!loading && groupsData?.length) details.push(`${groupsData.length} groups`);

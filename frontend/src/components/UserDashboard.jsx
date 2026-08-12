@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRedivisQuery } from "../hooks/useRedivisQuery";
 import { getUserSummaries, getUsersByPeriod, getFilterOptions, ck } from "../redivis/queries";
 import { formatUsd } from "../lib/ec2";
@@ -135,9 +135,16 @@ export default function UserDashboard({ cluster, startDate, endDate, node, group
     ck(cluster, "usersPeriod", startDate, endDate, fk),
   );
   const { data: filterOptions } = useRedivisQuery(
-    () => getFilterOptions(cluster, startDate, endDate),
-    ck(cluster, "filters", startDate, endDate),
+    () => getFilterOptions(cluster, startDate, endDate, { group, node }),
+    ck(cluster, "filters", startDate, endDate, group || "", node || ""),
   );
+
+  // The partition list narrows with the global filters, so a selection can stop existing.
+  useEffect(() => {
+    if (partition && filterOptions && !filterOptions.partitions.includes(partition)) {
+      setPartition("");
+    }
+  }, [partition, filterOptions]);
 
   const queries = [loading, lPeriod];
   const total = queries.length;

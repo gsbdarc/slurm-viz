@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRedivisQuery } from "../hooks/useRedivisQuery";
 import { getSummary, getJobs, getTimeline, getFilterOptions, getWaitTimes, ck } from "../redivis/queries";
 import { jobCost, formatUsd } from "../lib/ec2";
@@ -233,13 +233,29 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
     ck(cluster, "timeline", startDate, endDate, fk),
   );
   const { data: filterOptions, loading: lFilters } = useRedivisQuery(
-    () => getFilterOptions(cluster, startDate, endDate),
-    ck(cluster, "filters", startDate, endDate),
+    () => getFilterOptions(cluster, startDate, endDate, { group, node }),
+    ck(cluster, "filters", startDate, endDate, group || "", node || ""),
   );
   const { data: waitTimes, loading: lWait } = useRedivisQuery(
     () => getWaitTimes(cluster, startDate, endDate, filters),
     ck(cluster, "wait", startDate, endDate, fk),
   );
+
+  // The option lists narrow with the global filters, so a locally selected user or partition can
+  // stop existing — pick a user, then a group they aren't in. Left alone, the `<select>` would show
+  // blank while still filtering by the vanished value.
+  useEffect(() => {
+    if (!filterOptions) return;
+    setLocalFilters((prev) => {
+      const next = { ...prev };
+      if (next.user && !filterOptions.users.includes(next.user)) next.user = "";
+      if (next.partition && !filterOptions.partitions.includes(next.partition)) next.partition = "";
+      if (next.state && !filterOptions.states.includes(next.state)) next.state = "";
+      return next.user === prev.user && next.partition === prev.partition && next.state === prev.state
+        ? prev
+        : next;
+    });
+  }, [filterOptions]);
 
   const queries = [loading, lSummary, lTimeline, lFilters, lWait, ...(hasFilters ? [lFiltered] : [])];
   const total = queries.length;
