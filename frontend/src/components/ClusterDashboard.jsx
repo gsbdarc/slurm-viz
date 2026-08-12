@@ -133,7 +133,7 @@ export default function ClusterDashboard({ cluster, startDate, endDate, node, gr
             <ResponsiveContainer width="100%" height={300}>
               <PieChart>
                 <Pie
-
+                  isAnimationActive={false}
                   data={partitionData}
                   dataKey="value"
                   nameKey="name"
@@ -165,7 +165,7 @@ export default function ClusterDashboard({ cluster, startDate, endDate, node, gr
                 <XAxis dataKey="Partition" />
                 <YAxis />
                 <Tooltip formatter={(v, name) => [typeof v === "number" ? (v % 1 === 0 ? v.toLocaleString() : v.toFixed(1)) : v, name]} />
-                <Bar dataKey="total_cpus" fill="#175E54" name="Total CPUs">
+                <Bar isAnimationActive={false} dataKey="total_cpus" fill="#175E54" name="Total CPUs">
                   <LabelList
                     dataKey="avg_cpus_per_job"
                     position="top"

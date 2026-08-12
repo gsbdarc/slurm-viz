@@ -254,7 +254,7 @@ export default function UserDashboard({ cluster, startDate, endDate, node, group
                     typeof v === "number" ? v.toFixed(1) : v
                   }
                 />
-                <Bar dataKey="cpu_hours" fill="#B1040E" name="CPU Hours" />
+                <Bar isAnimationActive={false} dataKey="cpu_hours" fill="#B1040E" name="CPU Hours" />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -271,7 +271,7 @@ export default function UserDashboard({ cluster, startDate, endDate, node, group
                 <XAxis type="number" />
                 <YAxis dataKey="User" type="category" width={120} tick={{ fontSize: 13 }} />
                 <Tooltip />
-                <Bar dataKey="job_count" fill="#008566" name="Jobs" />
+                <Bar isAnimationActive={false} dataKey="job_count" fill="#008566" name="Jobs" />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -289,7 +289,7 @@ export default function UserDashboard({ cluster, startDate, endDate, node, group
               <XAxis type="number" tickFormatter={formatUsd} />
               <YAxis dataKey="User" type="category" width={120} tick={{ fontSize: 13 }} />
               <Tooltip formatter={(v) => formatUsd(v)} />
-              <Bar dataKey="ec2_cost_usd" fill="#E98300" name="EC2 Cost" />
+              <Bar isAnimationActive={false} dataKey="ec2_cost_usd" fill="#E98300" name="EC2 Cost" />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -309,6 +309,8 @@ export default function UserDashboard({ cluster, startDate, endDate, node, group
               <Legend />
               {partitions.map((p, i) => (
                 <Bar
+
+                  isAnimationActive={false}
 
                   key={p}
                   dataKey={p}

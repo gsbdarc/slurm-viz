@@ -195,7 +195,7 @@ export default function GroupDashboard({ cluster, startDate, endDate, node, grou
                 <XAxis type="number" />
                 <YAxis dataKey="Group" type="category" width={120} tick={{ fontSize: 13 }} />
                 <Tooltip formatter={(v) => (typeof v === "number" ? v.toFixed(1) : v)} />
-                <Bar dataKey="cpu_hours" fill="#B1040E" name="CPU Hours" />
+                <Bar isAnimationActive={false} dataKey="cpu_hours" fill="#B1040E" name="CPU Hours" />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -212,7 +212,7 @@ export default function GroupDashboard({ cluster, startDate, endDate, node, grou
                 <XAxis type="number" />
                 <YAxis dataKey="Group" type="category" width={120} tick={{ fontSize: 13 }} />
                 <Tooltip formatter={(v) => (typeof v === "number" ? v.toLocaleString() : v)} />
-                <Bar dataKey="job_count" fill="#008566" name="Jobs" />
+                <Bar isAnimationActive={false} dataKey="job_count" fill="#008566" name="Jobs" />
               </BarChart>
             </ResponsiveContainer>
           </div>

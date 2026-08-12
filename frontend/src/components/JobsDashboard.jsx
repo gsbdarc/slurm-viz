@@ -430,7 +430,7 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
               <XAxis dataKey="name" />
               <YAxis />
               <Tooltip />
-              <Bar dataKey="value" fill="#B1040E" />
+              <Bar isAnimationActive={false} dataKey="value" fill="#B1040E" />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -449,10 +449,10 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
               <YAxis yAxisId="right" orientation="right" label={{ value: `Wait (${waitUnit})`, angle: 90, position: "insideRight" }} />
               <Tooltip />
               <Legend />
-              <Bar yAxisId="left" dataKey="count" fill="#4298B5" name="Jobs" opacity={0.4} />
-              <Line yAxisId="right" type="monotone" dataKey="median" stroke="#008566" strokeWidth={2} dot={false} name={`Median (${waitUnit})`} />
-              <Line yAxisId="right" type="monotone" dataKey="avg" stroke="#E98300" strokeWidth={2} dot={false} name={`Avg (${waitUnit})`} />
-              <Line yAxisId="right" type="monotone" dataKey="max" stroke="#B83A4B" strokeWidth={1} strokeDasharray="4 4" dot={false} name={`Max (${waitUnit})`} />
+              <Bar isAnimationActive={false} yAxisId="left" dataKey="count" fill="#4298B5" name="Jobs" opacity={0.4} />
+              <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="median" stroke="#008566" strokeWidth={2} dot={false} name={`Median (${waitUnit})`} />
+              <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="avg" stroke="#E98300" strokeWidth={2} dot={false} name={`Avg (${waitUnit})`} />
+              <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="max" stroke="#B83A4B" strokeWidth={1} strokeDasharray="4 4" dot={false} name={`Max (${waitUnit})`} />
             </ComposedChart>
           </ResponsiveContainer>
         </div>
