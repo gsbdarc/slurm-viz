@@ -11,10 +11,12 @@ dashboard between the two clusters.
 - **Jobs** — browse, filter, and sort job records; view submission timelines and queue wait times
 - **Cluster** — partition utilization, CPU usage, and node counts
 - **Users** — top users by CPU hours, job count, and EC2 cost; usage over time
+- **Groups** — top PI groups by CPU hours and job count (Sherlock only — see below)
 - **EC2 equivalent cost** — every job priced as the cheapest EC2 instance that fits its requested
   CPU / RAM / GPU, billed for elapsed time (Yen only — see below)
 - Date range presets (7d / 30d / 90d / 1y) and custom date selection
-- Filter by node (e.g. `yen-gpu4`, `sh03-08n27`) across all tabs, plus partition, user, and job state
+- Filter by node (e.g. `yen-gpu4`, `sh03-08n27`) and by group across all tabs, plus partition, user,
+  and job state
 
 Panels are driven by per-cluster feature flags in
 [`frontend/src/lib/clusters.js`](frontend/src/lib/clusters.js), which is the single place a
@@ -77,6 +79,7 @@ Redivis.
 | Terminal states | `COMPLETED` / `FAILED` / `TIMEOUT` … | **never observed** |
 | Elapsed time | `ElapsedRaw`, final and authoritative | last-seen runtime — a **lower bound** |
 | Scope | whole cluster | the `sh_s-gsb` group only |
+| PI group | not recorded | `Group`, a clean hierarchy over users |
 
 Both dumps record a job many times, so every query first collapses them to one row per job with a
 `ROW_NUMBER()` CTE. The partition and ordering keys differ per cluster and carry their reasoning in
@@ -91,8 +94,27 @@ dashboard rather than a broken imitation of the Yen one:
 
 - **No EC2 cost.** That model bills real elapsed time. The last runtime observed before a job left
   the queue understates every long job, with no way to say by how much.
-- **No completed/failed breakdown.** Only `RUNNING`, `PENDING`, `COMPLETING` and `CONFIGURING` are
-  ever recorded.
+- **No job state at all.** Only `RUNNING`, `PENDING`, `COMPLETING` and `CONFIGURING` are ever
+  recorded, so a state breakdown describes when the snapshot fired rather than how the work went.
+  The state tiles, the "Jobs by State" chart, the state filter and the per-job State column are all
+  hidden here rather than inviting a comparison that cannot be made.
+- **Every statistic is survivorship-biased.** This is the big one. The collector runs *hourly*, so a
+  job submitted, run and finished between two snapshots is never recorded at all. What survives into
+  the data skews toward jobs that waited or ran long enough to be caught: counts understate
+  throughput, while average runtimes and waits overstate it. The caveat banner quantifies this for
+  whatever range and filters are on screen — over the last 30 days, 62% of jobs were seen in only one
+  snapshot and 25% were never observed running.
+
+  The hourly figure is measured, not assumed. There is no snapshot timestamp column, but for a job
+  seen repeatedly the gaps between consecutive observed runtimes *are* the sampling interval: the
+  median is exactly 3600 s, with 425,186 gaps near 60 minutes against 150 near 30.
+- **A queued job's partition is a list, not a value.** squeue names every partition the job is
+  eligible for, so `Partition` can read `gsb,maggiori,normal,owners`; it resolves to one only once
+  the job is placed. Verified as a queued-job artifact: 8,100 `PENDING` and 65 `COMPLETING` jobs
+  carry a list, and no `RUNNING` or `CONFIGURING` job does. The dashboard sorts the tokens so
+  `athey,normal` and `normal,athey` stop being two labels for one request, which takes 42 distinct
+  values down to 28. Note the filter is still an exact match on that canonical value, so filtering
+  `gsb` does **not** match the queued job that asked for `gsb,normal`.
 - **Runtimes are lower bounds.** `TimeUsed` is the last value seen, in `MM:SS` / `HH:MM:SS` /
   `D-HH:MM:SS` form. There is no snapshot timestamp column, so "the latest snapshot" is expressed as
   "the largest observed runtime" — ordered on the *parsed* seconds, since lexically `9:00` would
@@ -103,6 +125,22 @@ dashboard rather than a broken imitation of the Yen one:
 - **Queue waits exclude pending jobs**, whose `StartTime` is a forecast rather than a fact.
 - **CPU and memory are missing before December 2025** — see
   [issue #6](https://github.com/gsbdarc/slurm-viz/issues/6).
+
+### Groups (Sherlock only)
+
+Sherlock work is organised by PI group, so the dump's `Group` column gets a tab of its own and a
+filter in the shared bar that narrows every other tab.
+
+Group is a clean hierarchy over users — 23 groups across 91 users, and no user has ever appeared
+under two — so aggregating by group is unambiguous, and each user's group can be shown on the Users
+tab without a second grouping key. It matches `Account` except for 135 jobs.
+
+Jobs with no group recorded are kept in the table as `(no group recorded)`, so its totals still
+reconcile against the summary cards, but are left out of the charts: on a range reaching back before
+December 2025 that bucket is around 41% of jobs and would be the tallest bar while telling you
+nothing about any group. See [issue #6](https://github.com/gsbdarc/slurm-viz/issues/6).
+
+Yen's sacct dump has no group column, so the tab and the filter do not appear there.
 
 ### Sherlock collection pipeline
 
