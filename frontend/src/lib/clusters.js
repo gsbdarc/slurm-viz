@@ -60,6 +60,7 @@ export const CLUSTERS = {
       start: "Start",
       end: "End",
       nodeList: "NodeList",
+      group: null, // sacct dump carries no group/account column
     },
 
     /**
@@ -94,10 +95,11 @@ export const CLUSTERS = {
     features: {
       ec2Cost: true,
       nodeFilter: true,
-      terminalStates: true,
+      jobStates: true,
       waitTimes: true,
       memory: true,
       gpus: true,
+      groups: false,
     },
 
     /**
@@ -108,6 +110,17 @@ export const CLUSTERS = {
 
     /** Resolved against the live schema — dumps vary in which TRES column they carry. */
     tresColumnCandidates: ["AllocTRES", "ReqTRES", "ReqGRES"],
+
+    /**
+     * No `sampling` key: sacct is accounting, not sampling, so runtimes are final and the
+     * survivorship-bias metrics would be meaningless here. Run against this table they read 95.5%
+     * "single snapshot", which is only sacct recording a finished job once.
+     *
+     * No `partition.multiValued` either. Three of 1,064,366 Yen rows do carry a comma partition, and
+     * canonicalising token order would merge the 8 distinct labels into 6 — arguably more correct,
+     * but it would move the `Partitions` headline tile and reshape the pie. Yen parity is the
+     * regression contract for the Sherlock work, so that is a deliberate follow-up.
+     */
 
     nodeList: {
       // sacct writes "None assigned" (and plain "None") for jobs that never landed on a node.
@@ -148,6 +161,14 @@ export const CLUSTERS = {
       // `NodeList` is the assigned-nodes column and is clean: 0 of 859,296 rows start with "(".
       // The parenthesised pending reasons live in the separate `NodeListReason` column.
       nodeList: "NodeList",
+      // The PI group, and the dimension GSB work is actually organised by on Sherlock.
+      //
+      // Verified: group is a function of user — 23 groups over 91 users, and no user has ever
+      // appeared under two — so aggregating by group is unambiguous and a user's group can be
+      // carried alongside their row without a second grouping key. It matches `Account` except for
+      // 135 jobs (group `hlustig`, account `callende`). NULL for 67,955 of 165,906 jobs, every one
+      // of them submitted before ~December 2025 — see issue #6.
+      group: "Group",
     },
 
     /**
@@ -183,11 +204,36 @@ export const CLUSTERS = {
     features: {
       ec2Cost: false,
       nodeFilter: true,
-      terminalStates: false,
+      // Only RUNNING / PENDING / COMPLETING / CONFIGURING are ever recorded, so a state breakdown
+      // can only ever describe what the sampler happened to catch. Showing it invites comparisons
+      // that cannot be made, so state is dropped from this cluster's UI outright.
+      jobStates: false,
       waitTimes: true,
       memory: true,
       gpus: false,
+      groups: true,
     },
+
+    /**
+     * The collector is a scrontab job running once an hour at :30.
+     *
+     * Measured rather than taken on trust: there is no snapshot timestamp column, but for a job seen
+     * repeatedly the gaps between consecutive observed runtimes *are* the sampling interval — median
+     * exactly 3600s, with 425,186 gaps near 60 minutes against 150 near 30.
+     *
+     * The presence of this key is what marks a cluster's runtimes as lower bounds and turns on the
+     * sampling-bias banner. Keying that on sampling rather than on a state flag names the actual
+     * cause, and stays correct for a future cluster that records states but is still sampled.
+     */
+    sampling: { intervalSeconds: 3600, label: "hourly" },
+
+    /**
+     * squeue lists every partition a queued job is eligible for, so `Partition` can be a comma list
+     * whose order is not meaningful. Verified to be a queued-job artifact: 8,100 PENDING and 65
+     * COMPLETING jobs carry a list, and zero RUNNING or CONFIGURING ones do — a job's partition is
+     * not resolved until it is placed. Sorting the tokens takes 42 distinct values down to 28.
+     */
+    partition: { multiValued: true },
 
     /** squeue's `%m`: a plain size like `24G` or `6000M`, with no per-CPU/per-node scope marker. */
     memory: { kind: "plainSize" },
@@ -213,10 +259,12 @@ export const CLUSTERS = {
 
     caveat:
       "Sherlock data comes from hourly snapshots of the live queue (squeue), not job accounting. " +
-      "Runtimes are the last value observed before a job left the queue, so they are lower bounds; " +
-      "jobs are never seen in a finished state, so there is no completed/failed breakdown and no " +
-      "EC2 cost estimate. Coverage is the sh_s-gsb group only, and CPU and memory figures are " +
-      "missing entirely for jobs submitted before December 2025 (see issue #6).",
+      "A job that is submitted, runs and finishes between two snapshots is never recorded at all, " +
+      "so what you see is biased toward long-waiting and long-running jobs: counts understate " +
+      "throughput, while average runtimes and waits overstate it. Runtimes are the last value " +
+      "observed before a job left the queue, so they are lower bounds, and there is no EC2 cost " +
+      "estimate. Coverage is the sh_s-gsb group only, and CPU and memory figures are missing " +
+      "entirely for jobs submitted before December 2025 (see issue #6).",
   },
 };
 

@@ -86,13 +86,17 @@ function jobColumnsFor(cluster) {
     ...cluster.features,
     hasEndColumn: Boolean(cluster.columns.end),
   };
+  // Keyed on `sampling`, not on a state flag: a runtime is a lower bound because the source samples
+  // a live queue, which is the actual cause, and stays right for a sampled cluster that does record
+  // states.
   return JOB_COLUMNS.filter((c) => !c.feature || available[c.feature]).map((c) =>
-    c.key === "ElapsedRaw" && !cluster.features.terminalStates
+    c.key === "ElapsedRaw" && cluster.sampling
       ? {
           ...c,
           label: "Observed runtime (s)",
           title:
-            "Last runtime seen before the job left the queue — a lower bound, not the final elapsed time.",
+            `Last runtime seen before the job left the queue, sampled ${cluster.sampling.label} — ` +
+            "a lower bound, not the final elapsed time.",
         }
       : c,
   );

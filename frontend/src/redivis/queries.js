@@ -41,6 +41,28 @@ export function ck(cluster, ...parts) {
 }
 
 /**
+ * The canonical partition, as a raw expression.
+ *
+ * squeue lists every partition a queued job is eligible for, so the value can be a comma list whose
+ * order carries no meaning: `athey,normal` and `normal,athey` are the same request, and sorting the
+ * tokens makes them one label instead of two. Gated per cluster because sacct's partition is already
+ * singular, and normalising it there would move a headline number for no benefit.
+ *
+ * Use this only where the `jobs` CTE is not in scope — `buildWhere`, which also has to work against
+ * the raw table in `getSamplingStats`. Everywhere else use `partitionRef`.
+ */
+function partitionExprSql(cluster) {
+  const col = cols(cluster).partition;
+  if (!cluster.partition?.multiValued) return col;
+  return `(SELECT STRING_AGG(TRIM(p), ',' ORDER BY TRIM(p)) FROM UNNEST(SPLIT(${col}, ',')) AS p)`;
+}
+
+/** How to name the canonical partition inside the `jobs` CTE, where it is a projected column. */
+function partitionRef(cluster) {
+  return cluster.partition?.multiValued ? "`_partition`" : cols(cluster).partition;
+}
+
+/**
  * Collapse the dump's periodic snapshots down to one row per job.
  *
  * The partition and ordering keys are cluster-specific and carry their own rationale in
@@ -50,8 +72,15 @@ export function ck(cluster, ...parts) {
  * between identical queries.
  */
 function dedupCte(cluster, derivedColumns = "") {
+  // Project the canonical partition once, here, rather than inlining the expression at each use.
+  // BigQuery rejects a subquery in GROUP BY ("UNNEST expression references column `Partition` which
+  // is neither grouped nor aggregated"), so grouping needs a plain column to point at.
+  const partitionCol = cluster.partition?.multiValued
+    ? `, ${partitionExprSql(cluster)} AS _partition`
+    : "";
+
   return `jobs AS (
-    SELECT *${derivedColumns}
+    SELECT *${partitionCol}${derivedColumns}
     FROM (
         SELECT *, ROW_NUMBER() OVER (
             PARTITION BY ${cluster.dedup.partition} ORDER BY ${cluster.dedup.order}
@@ -456,20 +485,26 @@ function waitSecondsSql(cluster) {
  */
 async function buildWhere(cluster, start, end, filters = {}, extra = []) {
   const c = cols(cluster);
-  const { state, user, partition, node } = filters;
+  const { state, user, partition, node, group } = filters;
   const conditions = [dateClause(cluster, start, end), ...extra];
-  if (state) conditions.push(`${c.state} LIKE ${sqlString(`%${state}%`)}`);
+  if (state && cluster.features.jobStates) {
+    conditions.push(`${c.state} LIKE ${sqlString(`%${state}%`)}`);
+  }
   if (user) conditions.push(`${c.user} = ${sqlString(user)}`);
-  if (partition) conditions.push(`${c.partition} = ${sqlString(partition)}`);
+  // Matches the canonical form, so the dropdown and the filter agree. Note this is exact rather than
+  // membership: filtering `gsb` does not match the queued job that asked for `gsb,normal`.
+  if (partition) conditions.push(`${partitionExprSql(cluster)} = ${sqlString(partition)}`);
   if (node && cluster.features.nodeFilter && c.nodeList) {
     conditions.push(nodeMatchSql(c.nodeList, node, cluster.nodeList?.rejectValuePattern));
   }
+  // The `c.group` guard keeps a stale selection from emitting SQL against a column Yen lacks.
+  if (group && c.group) conditions.push(`${c.group} = ${sqlString(group)}`);
   return conditions.join(" AND ");
 }
 
 /** Stable cache-key fragment for a filter set. */
 function filterKey(filters = {}) {
-  return [filters.state, filters.user, filters.partition, filters.node]
+  return [filters.state, filters.user, filters.partition, filters.node, filters.group]
     .map((v) => v || "")
     .join("|");
 }
@@ -484,7 +519,9 @@ export async function getFilterOptions(cluster, start, end) {
   const base = ck(cluster, "filters", start, end);
   const cte = plainCte(cluster);
 
-  const [users, partitions, states, nodeNames] = await Promise.all([
+  const part = partitionRef(cluster);
+
+  const [users, partitions, states, groups, nodeNames] = await Promise.all([
     runQuery(
       cluster,
       `WITH ${cte}
@@ -495,13 +532,14 @@ export async function getFilterOptions(cluster, start, end) {
     runQuery(
       cluster,
       `WITH ${cte}
-       SELECT DISTINCT ${c.partition} AS val FROM jobs
+       SELECT DISTINCT ${part} AS val FROM jobs
        WHERE ${dc} AND ${c.partition} IS NOT NULL ORDER BY val`,
       `${base}_partitions`,
     ),
-    runQuery(
-      cluster,
-      `WITH ${cte}
+    cluster.features.jobStates
+      ? runQuery(
+          cluster,
+          `WITH ${cte}
        SELECT DISTINCT
            CASE
                WHEN ${c.state} IS NULL THEN 'UNKNOWN'
@@ -509,8 +547,18 @@ export async function getFilterOptions(cluster, start, end) {
                ELSE ${c.state}
            END AS val
        FROM jobs WHERE ${dc} ORDER BY val`,
-      `${base}_states`,
-    ),
+          `${base}_states`,
+        )
+      : Promise.resolve([]),
+    c.group
+      ? runQuery(
+          cluster,
+          `WITH ${cte}
+       SELECT DISTINCT ${c.group} AS val FROM jobs
+       WHERE ${dc} AND ${c.group} IS NOT NULL ORDER BY val`,
+          `${base}_groups`,
+        )
+      : Promise.resolve([]),
     getNodeNames(cluster, start, end),
   ]);
 
@@ -518,6 +566,7 @@ export async function getFilterOptions(cluster, start, end) {
     users: users.map((r) => r.val),
     partitions: partitions.map((r) => r.val),
     states: states.map((r) => r.val),
+    groups: groups.map((r) => r.val),
     nodes: nodeNames.nodes,
     nodesTruncated: nodeNames.truncated,
   };
@@ -531,42 +580,51 @@ export async function getSummary(cluster, start, end, filters = {}) {
   ]);
   const key = ck(cluster, "summary", start, end, filterKey(filters));
 
-  const costCol = frag.ec2Cost ? `SUM(${frag.ec2Cost}) AS total_ec2_cost_usd,` : "";
+  const selects = [
+    "COUNT(*) AS total_jobs",
+    `COUNT(DISTINCT ${c.user}) AS unique_users`,
+    `COUNT(DISTINCT ${partitionRef(cluster)}) AS unique_partitions`,
+  ];
+  if (frag.ec2Cost) selects.push(`SUM(${frag.ec2Cost}) AS total_ec2_cost_usd`);
+  // A cluster that never observes a job's final state has no state breakdown worth counting.
+  if (cluster.features.jobStates) {
+    selects.push(
+      `COUNTIF(${c.state} = 'COMPLETED') AS completed`,
+      `COUNTIF(${c.state} = 'FAILED') AS failed`,
+      `COUNTIF(${c.state} LIKE 'CANCELLED%') AS cancelled`,
+      `COUNTIF(${c.state} = 'RUNNING') AS running`,
+      `COUNTIF(${c.state} = 'PENDING') AS pending`,
+      `COUNTIF(${c.state} = 'TIMEOUT') AS timeout`,
+      `COUNTIF(${c.state} = 'OUT_OF_MEMORY') AS out_of_memory`,
+      `COUNTIF(${c.state} = 'NODE_FAIL') AS node_fail`,
+    );
+  }
 
   const rows = await runQuery(
     cluster,
     `WITH ${frag.cte}
-     SELECT
-         COUNT(*) AS total_jobs,
-         COUNT(DISTINCT ${c.user}) AS unique_users,
-         COUNT(DISTINCT ${c.partition}) AS unique_partitions,
-         ${costCol}
-         COUNTIF(${c.state} = 'COMPLETED') AS completed,
-         COUNTIF(${c.state} = 'FAILED') AS failed,
-         COUNTIF(${c.state} LIKE 'CANCELLED%') AS cancelled,
-         COUNTIF(${c.state} = 'RUNNING') AS running,
-         COUNTIF(${c.state} = 'PENDING') AS pending,
-         COUNTIF(${c.state} = 'TIMEOUT') AS timeout,
-         COUNTIF(${c.state} = 'OUT_OF_MEMORY') AS out_of_memory,
-         COUNTIF(${c.state} = 'NODE_FAIL') AS node_fail
+     SELECT ${selects.join(",\n         ")}
      FROM jobs WHERE ${where}`,
     key,
   );
 
   const r = rows[0] || {};
-  const stateCounts = {};
-  for (const stateKey of [
-    "completed",
-    "failed",
-    "cancelled",
-    "running",
-    "pending",
-    "timeout",
-    "out_of_memory",
-    "node_fail",
-  ]) {
-    const val = r[stateKey] || 0;
-    if (val) stateCounts[stateKey.toUpperCase().replace(/_/g, " ")] = val;
+  let stateCounts = null;
+  if (cluster.features.jobStates) {
+    stateCounts = {};
+    for (const stateKey of [
+      "completed",
+      "failed",
+      "cancelled",
+      "running",
+      "pending",
+      "timeout",
+      "out_of_memory",
+      "node_fail",
+    ]) {
+      const val = r[stateKey] || 0;
+      if (val) stateCounts[stateKey.toUpperCase().replace(/_/g, " ")] = val;
+    }
   }
 
   return {
@@ -621,8 +679,8 @@ export async function getJobs(cluster, start, end, filters = {}) {
        SELECT ${c.jobId} AS \`JobID\`,
               ${c.jobName} AS \`JobName\`,
               ${c.user} AS \`User\`,
-              ${c.partition} AS \`Partition\`,
-              ${c.state} AS \`State\`,
+              ${partitionRef(cluster)} AS \`Partition\`,
+              ${cluster.features.jobStates ? `${c.state} AS \`State\`,` : ""}
               ${c.ncpus} AS \`NCPUS\`,
               ${cluster.elapsedSecondsSql} AS \`ElapsedRaw\`,
               ${c.submit} AS \`Submit\`,
@@ -660,7 +718,7 @@ export async function getClusterUtilization(cluster, start, end, filters = {}) {
       cluster,
       `WITH ${frag.cte}
        SELECT
-           ${c.partition} AS \`Partition\`,
+           ${partitionRef(cluster)} AS \`Partition\`,
            COUNT(*) AS job_count,
            SUM(${c.ncpus}) AS total_cpus,
            AVG(${c.ncpus}) AS avg_cpus_per_job,
@@ -668,7 +726,7 @@ export async function getClusterUtilization(cluster, start, end, filters = {}) {
            AVG(${cluster.elapsedSecondsSql}) AS avg_elapsed_seconds,
            AVG(${waitSecondsSql(cluster)}) AS avg_wait_seconds${costCol}
        FROM jobs WHERE ${where}
-       GROUP BY ${c.partition} ORDER BY job_count DESC`,
+       GROUP BY ${partitionRef(cluster)} ORDER BY job_count DESC`,
       key,
     ),
     getNodeNames(cluster, start, end, where),
@@ -695,11 +753,20 @@ export async function getUserSummaries(cluster, start, end, filters = {}) {
 
   const costCol = frag.ec2Cost ? `SUM(${frag.ec2Cost}) AS ec2_cost_usd,` : "";
 
+  // `MAX`, not a second GROUP BY key. Grouping on (user, group) looks safe because group is a
+  // function of user, but it isn't in the presence of NULLs: a user with jobs either side of the
+  // December 2025 boundary would split into two rows and be counted twice in the table and the
+  // top-10 charts. MAX ignores NULLs, so it yields one row per user and back-fills the group over
+  // the era that lacks it — correct precisely because group is a function of user. ANY_VALUE would
+  // not do: it is free to return the NULL.
+  const groupCol = c.group ? `MAX(${c.group}) AS \`Group\`,` : "";
+
   return runQuery(
     cluster,
     `WITH ${frag.cte}
      SELECT
          ${c.user} AS \`User\`,
+         ${groupCol}
          COUNT(*) AS job_count,
          SUM(${c.ncpus}) AS total_cpus,
          SUM(${elapsed}) AS total_elapsed,
@@ -710,6 +777,88 @@ export async function getUserSummaries(cluster, start, end, filters = {}) {
      GROUP BY ${c.user} ORDER BY cpu_hours DESC`,
     key,
   );
+}
+
+/**
+ * Per-group aggregates. Empty on clusters with no group column, without emitting SQL.
+ *
+ * `GROUP` is a BigQuery reserved word: `cols()` hands it back already backticked and the output
+ * alias is written explicitly, but the GROUP BY must name the *expression*, never the alias — the
+ * same trap `Partition` sprang earlier.
+ */
+export async function getGroupSummaries(cluster, start, end, filters = {}) {
+  const c = cols(cluster);
+  if (!c.group) return [];
+
+  const [where, frag] = await Promise.all([
+    buildWhere(cluster, start, end, filters),
+    sqlFragments(cluster),
+  ]);
+  const key = ck(cluster, "groups", start, end, filterKey(filters));
+  const elapsed = cluster.elapsedSecondsSql;
+  const costCol = frag.ec2Cost ? `SUM(${frag.ec2Cost}) AS ec2_cost_usd,` : "";
+
+  // No total_elapsed: summing observed runtimes across a whole group is a number with no
+  // interpretation, especially where those runtimes are lower bounds.
+  return runQuery(
+    cluster,
+    `WITH ${frag.cte}
+     SELECT
+         ${c.group} AS \`Group\`,
+         COUNT(*) AS job_count,
+         COUNT(DISTINCT ${c.user}) AS user_count,
+         SUM(${c.ncpus}) AS total_cpus,
+         SUM(CAST(${c.ncpus} AS FLOAT64) * ${elapsed}) / 3600 AS cpu_hours,
+         ${costCol}
+         SUM(IFNULL(${waitSecondsSql(cluster)}, 0)) / 3600.0 AS total_wait_hours
+     FROM jobs WHERE ${where}
+     GROUP BY ${c.group} ORDER BY cpu_hours DESC`,
+    key,
+  );
+}
+
+/**
+ * How much of the record the sampler actually caught.
+ *
+ * Only meaningful where the source is periodic snapshots of a live queue: a job that is submitted,
+ * runs and finishes between two samples leaves no trace at all, so the visible population is biased
+ * toward jobs that waited or ran long enough to be caught. These two figures put a number on that.
+ *
+ * Runs against the **raw** table rather than the dedup CTE, because the snapshot count per job is
+ * exactly what dedup collapses away. That is sound because every condition `buildWhere` emits names
+ * a physical column, and `MAX(elapsed)` over the dedup keys equals the deduped row's elapsed —
+ * verified across all 165,906 Sherlock jobs. Reusing `dedup.partition` for both the projection and
+ * the grouping makes `jobs` equal the deduped job count by construction.
+ */
+export async function getSamplingStats(cluster, start, end, filters = {}) {
+  if (!cluster.sampling) return null;
+
+  const where = await buildWhere(cluster, start, end, filters);
+  const key = ck(cluster, "sampling", start, end, filterKey(filters));
+
+  const rows = await runQuery(
+    cluster,
+    `WITH per_job AS (
+       SELECT ${cluster.dedup.partition},
+              COUNT(*) AS snaps,
+              MAX(${cluster.elapsedSecondsSql}) AS max_elapsed
+       FROM \`${cluster.table}\`
+       WHERE ${where}
+       GROUP BY ${cluster.dedup.partition}
+     )
+     SELECT COUNT(*) AS jobs,
+            COUNTIF(max_elapsed = 0) AS never_ran,
+            COUNTIF(snaps = 1) AS single_snapshot
+     FROM per_job`,
+    key,
+  );
+
+  const r = rows[0] || {};
+  return {
+    jobs: r.jobs || 0,
+    never_ran: r.never_ran || 0,
+    single_snapshot: r.single_snapshot || 0,
+  };
 }
 
 export async function getWaitTimes(cluster, start, end, filters = {}) {
@@ -746,10 +895,10 @@ export async function getUsersByPeriod(cluster, start, end, filters = {}) {
     `WITH ${plainCte(cluster)}
      SELECT
          ${expr} AS period,
-         ${c.partition} AS \`Partition\`,
+         ${partitionRef(cluster)} AS \`Partition\`,
          COUNT(DISTINCT ${c.user}) AS unique_users
      FROM jobs WHERE ${where}
-     GROUP BY period, ${c.partition} ORDER BY period`,
+     GROUP BY period, ${partitionRef(cluster)} ORDER BY period`,
     key,
   );
 
