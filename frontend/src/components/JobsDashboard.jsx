@@ -16,7 +16,7 @@ import {
   Legend,
 } from "recharts";
 
-function MiniCards({ data, label, showCost }) {
+function MiniCards({ data, label, showCost, showStates }) {
   if (!data) return null;
 
   const cards = [
@@ -29,7 +29,7 @@ function MiniCards({ data, label, showCost }) {
     cards.push({ label: "EC2 Equivalent", value: formatUsd(data.total_ec2_cost_usd) });
   }
 
-  if (data.state_counts) {
+  if (showStates && data.state_counts) {
     Object.entries(data.state_counts)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 4)
@@ -63,7 +63,7 @@ const JOB_COLUMNS = [
   { key: "JobName", label: "Name" },
   { key: "User", label: "User" },
   { key: "Partition", label: "Partition" },
-  { key: "State", label: "State" },
+  { key: "State", label: "State", feature: "jobStates" },
   { key: "NCPUS", label: "CPUs", numeric: true },
   { key: "ReqMem_GB", label: "Memory (GB)", numeric: true, feature: "memory" },
   { key: "gpu_count", label: "GPUs", numeric: true, feature: "gpus" },
@@ -199,16 +199,21 @@ export default function JobsDashboard({ cluster, startDate, endDate, node }) {
   });
   const [sort, setSort] = useState({ col: null, asc: true });
   const showCost = cluster.features.ec2Cost;
+  const showStates = cluster.features.jobStates;
   const columns = jobColumnsFor(cluster);
+
+  // With no state control rendered, a stale `state` must not linger in the filter set or the cache
+  // key — it would filter invisibly and put a "Filtered" row on screen with nothing to explain it.
+  const activeState = showStates ? localFilters.state : "";
 
   // `node` is a global filter owned by App; the rest are local to this tab. The summary strip
   // above already reflects `node`, so only the local filters justify a second "Filtered" row —
   // otherwise it would restate the same numbers.
-  const filters = { ...localFilters, node };
+  const filters = { ...localFilters, state: activeState, node };
   const hasFilters = Boolean(
-    localFilters.state || localFilters.user || localFilters.partition,
+    activeState || localFilters.user || localFilters.partition,
   );
-  const fk = `${localFilters.state}_${localFilters.user}_${localFilters.partition}_${node || ""}`;
+  const fk = `${activeState}_${localFilters.user}_${localFilters.partition}_${node || ""}`;
 
   const { data, loading, error } = useRedivisQuery(
     () => getJobs(cluster, startDate, endDate, filters),
@@ -265,12 +270,13 @@ export default function JobsDashboard({ cluster, startDate, endDate, node }) {
   const filterSuffix = filterParts.length > 0 ? ` (${filterParts.join(", ")})` : "";
 
   const activeSummary = hasFilters && filteredSummary ? filteredSummary : summary;
-  const stateData = activeSummary?.state_counts
-    ? Object.entries(activeSummary.state_counts).map(([name, value]) => ({
-        name,
-        value,
-      }))
-    : [];
+  const stateData =
+    showStates && activeSummary?.state_counts
+      ? Object.entries(activeSummary.state_counts).map(([name, value]) => ({
+          name,
+          value,
+        }))
+      : [];
 
   const rawWait = waitTimes?.data || [];
   const maxWaitMin = Math.max(0, ...rawWait.map((r) => r.max_wait_minutes || 0));
@@ -349,18 +355,20 @@ export default function JobsDashboard({ cluster, startDate, endDate, node }) {
   return (
     <div className="space-y-6">
       <div className="flex gap-3 items-center">
-        <select
-          className="border border-black-20 rounded px-3 py-1.5 text-sm bg-white"
-          value={localFilters.state}
-          onChange={(e) => setLocalFilters({ ...localFilters, state: e.target.value })}
-        >
-          <option value="">All states</option>
-          {(filterOptions?.states || []).map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
+        {showStates && (
+          <select
+            className="border border-black-20 rounded px-3 py-1.5 text-sm bg-white"
+            value={localFilters.state}
+            onChange={(e) => setLocalFilters({ ...localFilters, state: e.target.value })}
+          >
+            <option value="">All states</option>
+            {(filterOptions?.states || []).map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        )}
         <select
           className="border border-black-20 rounded px-3 py-1.5 text-sm bg-white"
           value={localFilters.user}
@@ -403,7 +411,12 @@ export default function JobsDashboard({ cluster, startDate, endDate, node }) {
 
       {!anyLoading && <>
       {hasFilters && filteredSummary && (
-        <MiniCards data={filteredSummary} label="Filtered" showCost={showCost} />
+        <MiniCards
+          data={filteredSummary}
+          label="Filtered"
+          showCost={showCost}
+          showStates={showStates}
+        />
       )}
 
       {stateData.length > 0 && (

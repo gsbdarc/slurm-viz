@@ -40,6 +40,15 @@ function fmtDuration(seconds) {
 }
 
 export default function ClusterDashboard({ cluster, startDate, endDate, node }) {
+  const showMemory = cluster.features.memory;
+  const showWaits = cluster.features.waitTimes;
+  // Where runtimes are last-seen values rather than final ones, an average of them is an average of
+  // lower bounds, and the column heading should not pretend otherwise.
+  const durationLabel = cluster.sampling ? "Avg Observed Runtime" : "Avg Duration";
+  const durationTitle = cluster.sampling
+    ? `Averaged over last-seen runtimes from ${cluster.sampling.label} snapshots — a lower bound.`
+    : undefined;
+
   const { data, loading, error } = useRedivisQuery(
     () => getClusterUtilization(cluster, startDate, endDate, { node }),
     ck(cluster, "cluster", startDate, endDate, node || ""),
@@ -53,16 +62,35 @@ export default function ClusterDashboard({ cluster, startDate, endDate, node }) 
     return <LoadingProgress completed={0} total={1} label="Loading cluster" details={details} />;
   if (error) return <div className="text-spirited p-4">Error: {error}</div>;
 
-  const partitionData = data.partitions
+  const allPartitions = data.partitions
     ? Object.entries(data.partitions).map(([name, value]) => ({ name, value }))
     : [];
+
+  // A pie is only readable to about a dozen slices, and on a cluster where a queued job lists every
+  // partition it is eligible for there can be far more than that. Show the biggest and roll the tail
+  // into one slice — display only, so no total moves and the Partition Details table below still
+  // lists every partition individually.
+  const PIE_SLICES = 8;
+  const partitionData = (() => {
+    if (allPartitions.length <= PIE_SLICES + 1) return allPartitions;
+    const sorted = [...allPartitions].sort((a, b) => b.value - a.value);
+    const head = sorted.slice(0, PIE_SLICES);
+    const tail = sorted.slice(PIE_SLICES);
+    return [
+      ...head,
+      {
+        name: `(other — ${tail.length} partitions)`,
+        value: tail.reduce((sum, p) => sum + p.value, 0),
+      },
+    ];
+  })();
 
   const cpuData = data.cpu_by_partition || [];
 
   // A node filter narrows this tab to one machine, which usually leaves a single partition. A
   // one-slice pie and a lone bar convey nothing the table below doesn't state more precisely, so
   // the "by Partition" charts are only worth drawing when there's something to compare.
-  const showPartitionCharts = partitionData.length > 1;
+  const showPartitionCharts = allPartitions.length > 1;
 
   // `nodes_used` counts every node the matching jobs touched. Under a node filter that's still
   // >1 whenever a multi-node job (e.g. `yen-gpu[1-4]`) also ran elsewhere — true, but it reads as
@@ -113,8 +141,6 @@ export default function ClusterDashboard({ cluster, startDate, endDate, node }) 
                   outerRadius={100}
                   innerRadius={40}
                   paddingAngle={2}
-                  label={({ name, percent }) => `${name} (${(percent * 100).toFixed(0)}%)`}
-                  labelLine={{ stroke: "#585754" }}
                 >
                   {partitionData.map((_, i) => (
                     <Cell key={i} fill={COLORS[i % COLORS.length]} />
@@ -164,9 +190,15 @@ export default function ClusterDashboard({ cluster, startDate, endDate, node }) 
                 <th className="px-4 py-2 font-medium text-black-su">Job Count</th>
                 <th className="px-4 py-2 font-medium text-black-su">Total CPUs</th>
                 <th className="px-4 py-2 font-medium text-black-su">Avg CPUs/Job</th>
-                <th className="px-4 py-2 font-medium text-black-su">Avg RAM/Job</th>
-                <th className="px-4 py-2 font-medium text-black-su">Avg Duration</th>
-                <th className="px-4 py-2 font-medium text-black-su">Avg Queue Wait</th>
+                {showMemory && (
+                  <th className="px-4 py-2 font-medium text-black-su">Avg RAM/Job</th>
+                )}
+                <th className="px-4 py-2 font-medium text-black-su" title={durationTitle}>
+                  {durationLabel}
+                </th>
+                {showWaits && (
+                  <th className="px-4 py-2 font-medium text-black-su">Avg Queue Wait</th>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -182,15 +214,19 @@ export default function ClusterDashboard({ cluster, startDate, endDate, node }) 
                   <td className="px-4 py-2">
                     {row.avg_cpus_per_job?.toFixed(1)}
                   </td>
-                  <td className="px-4 py-2">
-                    {row.avg_mem_gb != null ? `${Number(row.avg_mem_gb).toFixed(2)} GB` : "—"}
-                  </td>
+                  {showMemory && (
+                    <td className="px-4 py-2">
+                      {row.avg_mem_gb != null ? `${Number(row.avg_mem_gb).toFixed(2)} GB` : "—"}
+                    </td>
+                  )}
                   <td className="px-4 py-2">
                     {fmtDuration(row.avg_elapsed_seconds)}
                   </td>
-                  <td className="px-4 py-2">
-                    {fmtDuration(row.avg_wait_seconds)}
-                  </td>
+                  {showWaits && (
+                    <td className="px-4 py-2">
+                      {fmtDuration(row.avg_wait_seconds)}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

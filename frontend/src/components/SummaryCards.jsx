@@ -24,7 +24,8 @@ export default function SummaryCards({ cluster, startDate, endDate, node }) {
     cards.push({ label: "EC2 Equivalent", value: formatUsd(data.total_ec2_cost_usd) });
   }
 
-  if (data.state_counts) {
+  // `state_counts` is null where the source never observes a job's final state.
+  if (cluster.features.jobStates && data.state_counts) {
     Object.entries(data.state_counts)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 4)
