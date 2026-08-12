@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRedivisQuery } from "../hooks/useRedivisQuery";
-import { getUserSummaries, getUsersByPeriod, getFilterOptions } from "../redivis/queries";
+import { getUserSummaries, getUsersByPeriod, getFilterOptions, ck } from "../redivis/queries";
 import { formatUsd } from "../lib/ec2";
 import LoadingProgress from "./LoadingProgress";
 import {
@@ -27,19 +27,25 @@ const COLORS = [
 
 const USER_COLUMNS = [
   { key: "User", label: "User" },
+  { key: "Group", label: "Group", feature: "groups" },
   { key: "job_count", label: "Jobs", numeric: true },
   { key: "total_cpus", label: "Total CPUs", numeric: true },
   { key: "total_elapsed", label: "Elapsed (s)", numeric: true },
   { key: "cpu_hours", label: "CPU Hours", numeric: true },
-  { key: "ec2_cost_usd", label: "EC2 Cost", currency: true },
+  { key: "ec2_cost_usd", label: "EC2 Cost", currency: true, feature: "ec2Cost" },
   { key: "total_wait_hours", label: "Queue Wait (hrs)", numeric: true },
 ];
+
+/** Columns the cluster can actually populate — same idiom as `jobColumnsFor`. */
+function userColumnsFor(cluster) {
+  return USER_COLUMNS.filter((c) => !c.feature || cluster.features[c.feature]);
+}
 
 const numericUserCols = new Set(
   USER_COLUMNS.filter((c) => c.numeric || c.currency).map((c) => c.key),
 );
 
-function UserTable({ users }) {
+function UserTable({ users, columns }) {
   const [sort, setSort] = useState({ col: "cpu_hours", asc: false });
 
   const handleSort = (col) => {
@@ -80,7 +86,7 @@ function UserTable({ users }) {
         <table className="w-full text-sm text-left">
           <thead className="bg-fog sticky top-0">
             <tr>
-              {USER_COLUMNS.map((col) => (
+              {columns.map((col) => (
                 <th
                   key={col.key}
                   className="px-4 py-2 font-medium text-black-su cursor-pointer select-none hover:bg-fog-dark"
@@ -95,7 +101,7 @@ function UserTable({ users }) {
           <tbody>
             {sorted.map((user, i) => (
               <tr key={i} className="border-t border-black-20 hover:bg-black-10">
-                {USER_COLUMNS.map((col) => (
+                {columns.map((col) => (
                   <td key={col.key} className="px-4 py-2 whitespace-nowrap">
                     {fmtVal(col, user[col.key])}
                   </td>
@@ -109,24 +115,36 @@ function UserTable({ users }) {
   );
 }
 
-export default function UserDashboard({ startDate, endDate, node }) {
+export default function UserDashboard({ cluster, startDate, endDate, node, group }) {
   const [partition, setPartition] = useState("");
+  const showCost = cluster.features.ec2Cost;
 
-  const filters = { partition: partition || undefined, node: node || undefined };
-  const fk = `${partition}_${node || ""}`;
+  const filters = {
+    partition: partition || undefined,
+    node: node || undefined,
+    group: group || undefined,
+  };
+  const fk = `${partition}_${node || ""}_${group || ""}`;
 
   const { data: usersData, loading, error } = useRedivisQuery(
-    () => getUserSummaries(startDate, endDate, filters),
-    `users_${startDate}_${endDate}_${fk}`,
+    () => getUserSummaries(cluster, startDate, endDate, filters),
+    ck(cluster, "users", startDate, endDate, fk),
   );
   const { data: byPeriod, loading: lPeriod } = useRedivisQuery(
-    () => getUsersByPeriod(startDate, endDate, filters),
-    `usersPeriod_${startDate}_${endDate}_${fk}`,
+    () => getUsersByPeriod(cluster, startDate, endDate, filters),
+    ck(cluster, "usersPeriod", startDate, endDate, fk),
   );
   const { data: filterOptions } = useRedivisQuery(
-    () => getFilterOptions(startDate, endDate),
-    `filters_${startDate}_${endDate}`,
+    () => getFilterOptions(cluster, startDate, endDate, { group, node }),
+    ck(cluster, "filters", startDate, endDate, group || "", node || ""),
   );
+
+  // The partition list narrows with the global filters, so a selection can stop existing.
+  useEffect(() => {
+    if (partition && filterOptions && !filterOptions.partitions.includes(partition)) {
+      setPartition("");
+    }
+  }, [partition, filterOptions]);
 
   const queries = [loading, lPeriod];
   const total = queries.length;
@@ -196,7 +214,7 @@ export default function UserDashboard({ startDate, endDate, node }) {
   );
   const periodLabel = periodGranularity === "day" ? "Day" : periodGranularity === "week" ? "Week" : "Month";
 
-  const suffixParts = [partition, node].filter(Boolean);
+  const suffixParts = [partition, node, group].filter(Boolean);
   const partitionSuffix = suffixParts.length ? ` (${suffixParts.join(", ")})` : "";
 
   return (
@@ -243,7 +261,7 @@ export default function UserDashboard({ startDate, endDate, node }) {
                     typeof v === "number" ? v.toFixed(1) : v
                   }
                 />
-                <Bar dataKey="cpu_hours" fill="#B1040E" name="CPU Hours" />
+                <Bar isAnimationActive={false} dataKey="cpu_hours" fill="#B1040E" name="CPU Hours" />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -260,14 +278,14 @@ export default function UserDashboard({ startDate, endDate, node }) {
                 <XAxis type="number" />
                 <YAxis dataKey="User" type="category" width={120} tick={{ fontSize: 13 }} />
                 <Tooltip />
-                <Bar dataKey="job_count" fill="#008566" name="Jobs" />
+                <Bar isAnimationActive={false} dataKey="job_count" fill="#008566" name="Jobs" />
               </BarChart>
             </ResponsiveContainer>
           </div>
         )}
       </div>
 
-      {topByCost.length > 0 && topByCost[0].ec2_cost_usd != null && (
+      {showCost && topByCost.length > 0 && topByCost[0].ec2_cost_usd != null && (
         <div className="bg-white rounded-lg shadow border border-black-20 p-4">
           <h3 className="text-lg font-semibold text-black-su mb-3">
             Top Users by EC2 Cost{partitionSuffix}
@@ -278,7 +296,7 @@ export default function UserDashboard({ startDate, endDate, node }) {
               <XAxis type="number" tickFormatter={formatUsd} />
               <YAxis dataKey="User" type="category" width={120} tick={{ fontSize: 13 }} />
               <Tooltip formatter={(v) => formatUsd(v)} />
-              <Bar dataKey="ec2_cost_usd" fill="#E98300" name="EC2 Cost" />
+              <Bar isAnimationActive={false} dataKey="ec2_cost_usd" fill="#E98300" name="EC2 Cost" />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -298,6 +316,9 @@ export default function UserDashboard({ startDate, endDate, node }) {
               <Legend />
               {partitions.map((p, i) => (
                 <Bar
+
+                  isAnimationActive={false}
+
                   key={p}
                   dataKey={p}
                   stackId="a"
@@ -310,7 +331,7 @@ export default function UserDashboard({ startDate, endDate, node }) {
         </div>
       )}
 
-      <UserTable users={users} />
+      <UserTable users={users} columns={userColumnsFor(cluster)} />
       </>}
     </div>
   );
