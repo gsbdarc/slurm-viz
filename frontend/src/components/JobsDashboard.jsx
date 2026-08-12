@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useRedivisQuery } from "../hooks/useRedivisQuery";
-import { getSummary, getJobs, getTimeline, getFilterOptions, getWaitTimes } from "../redivis/queries";
+import { getSummary, getJobs, getTimeline, getFilterOptions, getWaitTimes, ck } from "../redivis/queries";
 import { jobCost, formatUsd } from "../lib/ec2";
 import LoadingProgress from "./LoadingProgress";
 import {
@@ -16,15 +16,18 @@ import {
   Legend,
 } from "recharts";
 
-function MiniCards({ data, label }) {
+function MiniCards({ data, label, showCost }) {
   if (!data) return null;
 
   const cards = [
     { label: "Total Jobs", value: data.total_jobs?.toLocaleString() },
     { label: "Unique Users", value: data.unique_users },
     { label: "Partitions", value: data.unique_partitions },
-    { label: "EC2 Equivalent", value: formatUsd(data.total_ec2_cost_usd) },
   ];
+
+  if (showCost) {
+    cards.push({ label: "EC2 Equivalent", value: formatUsd(data.total_ec2_cost_usd) });
+  }
 
   if (data.state_counts) {
     Object.entries(data.state_counts)
@@ -62,26 +65,47 @@ const JOB_COLUMNS = [
   { key: "Partition", label: "Partition" },
   { key: "State", label: "State" },
   { key: "NCPUS", label: "CPUs", numeric: true },
-  { key: "ReqMem_GB", label: "Memory (GB)", numeric: true },
-  { key: "gpu_count", label: "GPUs", numeric: true },
-  { key: "ec2_cost_usd", label: "EC2 Cost", currency: true },
-  { key: "ec2_instance", label: "EC2 Instance" },
-  { key: "wait_seconds", label: "Queue Wait (s)", numeric: true },
+  { key: "ReqMem_GB", label: "Memory (GB)", numeric: true, feature: "memory" },
+  { key: "gpu_count", label: "GPUs", numeric: true, feature: "gpus" },
+  { key: "ec2_cost_usd", label: "EC2 Cost", currency: true, feature: "ec2Cost" },
+  { key: "ec2_instance", label: "EC2 Instance", feature: "ec2Cost" },
+  { key: "wait_seconds", label: "Queue Wait (s)", numeric: true, feature: "waitTimes" },
   { key: "ElapsedRaw", label: "Elapsed (s)", numeric: true },
   { key: "Submit", label: "Submit", date: true },
   { key: "Start", label: "Start", date: true },
-  { key: "End", label: "End", date: true },
+  { key: "End", label: "End", date: true, feature: "hasEndColumn" },
   { key: "NodeList", label: "Nodes" },
 ];
 
-function JobTable({ data, sort, setSort }) {
+/**
+ * Columns a cluster can actually populate. `feature: null`-guarded entries would otherwise render a
+ * column of em-dashes, which reads as "no GPUs were used" rather than "this dump can't tell you".
+ */
+function jobColumnsFor(cluster) {
+  const available = {
+    ...cluster.features,
+    hasEndColumn: Boolean(cluster.columns.end),
+  };
+  return JOB_COLUMNS.filter((c) => !c.feature || available[c.feature]).map((c) =>
+    c.key === "ElapsedRaw" && !cluster.features.terminalStates
+      ? {
+          ...c,
+          label: "Observed runtime (s)",
+          title:
+            "Last runtime seen before the job left the queue — a lower bound, not the final elapsed time.",
+        }
+      : c,
+  );
+}
+
+function JobTable({ data, sort, setSort, columns, showCost }) {
   const handleSort = (col) => {
     setSort((prev) =>
       prev.col === col ? { col, asc: !prev.asc } : { col, asc: true },
     );
   };
 
-  const colMeta = Object.fromEntries(JOB_COLUMNS.map((c) => [c.key, c]));
+  const colMeta = Object.fromEntries(columns.map((c) => [c.key, c]));
   const sorted = [...(data.jobs || [])].sort((a, b) => {
     if (!sort.col) return 0;
     let av = a[sort.col], bv = b[sort.col];
@@ -119,21 +143,24 @@ function JobTable({ data, sort, setSort }) {
           Jobs ({data.total?.toLocaleString()} total, showing{" "}
           {data.jobs?.length})
         </h3>
-        <p className="text-xs text-black-60 mt-1">
-          EC2 cost across all {data.total?.toLocaleString()} matching jobs:{" "}
-          <span className="font-medium text-black-su">
-            {formatUsd(data.total_ec2_cost_usd)}
-          </span>
-          {anyOversized && " · † job exceeds every catalog instance; cost shown is a lower bound"}
-        </p>
+        {showCost && (
+          <p className="text-xs text-black-60 mt-1">
+            EC2 cost across all {data.total?.toLocaleString()} matching jobs:{" "}
+            <span className="font-medium text-black-su">
+              {formatUsd(data.total_ec2_cost_usd)}
+            </span>
+            {anyOversized && " · † job exceeds every catalog instance; cost shown is a lower bound"}
+          </p>
+        )}
       </div>
       <div className="overflow-x-auto max-h-96">
         <table className="w-full text-sm text-left">
           <thead className="bg-fog sticky top-0">
             <tr>
-              {JOB_COLUMNS.map((col) => (
+              {columns.map((col) => (
                 <th
                   key={col.key}
+                  title={col.title}
                   className="px-4 py-2 font-medium text-black-su cursor-pointer select-none hover:bg-fog-dark"
                   onClick={() => handleSort(col.key)}
                 >
@@ -146,7 +173,7 @@ function JobTable({ data, sort, setSort }) {
           <tbody>
             {sorted.slice(0, 200).map((job, i) => (
               <tr key={i} className="border-t border-black-20 hover:bg-black-10">
-                {JOB_COLUMNS.map((col) => (
+                {columns.map((col) => (
                   <td key={col.key} className="px-4 py-2 whitespace-nowrap">
                     {fmtVal(col, job[col.key])}
                   </td>
@@ -160,13 +187,15 @@ function JobTable({ data, sort, setSort }) {
   );
 }
 
-export default function JobsDashboard({ startDate, endDate, node }) {
+export default function JobsDashboard({ cluster, startDate, endDate, node }) {
   const [localFilters, setLocalFilters] = useState({
     state: "",
     user: "",
     partition: "",
   });
   const [sort, setSort] = useState({ col: null, asc: true });
+  const showCost = cluster.features.ec2Cost;
+  const columns = jobColumnsFor(cluster);
 
   // `node` is a global filter owned by App; the rest are local to this tab. The summary strip
   // above already reflects `node`, so only the local filters justify a second "Filtered" row —
@@ -178,28 +207,28 @@ export default function JobsDashboard({ startDate, endDate, node }) {
   const fk = `${localFilters.state}_${localFilters.user}_${localFilters.partition}_${node || ""}`;
 
   const { data, loading, error } = useRedivisQuery(
-    () => getJobs(startDate, endDate, filters),
-    `jobs_${startDate}_${endDate}_${fk}`,
+    () => getJobs(cluster, startDate, endDate, filters),
+    ck(cluster, "jobs", startDate, endDate, fk),
   );
   const { data: summary, loading: lSummary } = useRedivisQuery(
-    () => getSummary(startDate, endDate, { node }),
-    `summary_${startDate}_${endDate}_${node || ""}`,
+    () => getSummary(cluster, startDate, endDate, { node }),
+    ck(cluster, "summary", startDate, endDate, node || ""),
   );
   const { data: filteredSummary, loading: lFiltered } = useRedivisQuery(
-    hasFilters ? () => getSummary(startDate, endDate, filters) : null,
-    hasFilters ? `fsummary_${startDate}_${endDate}_${fk}` : null,
+    hasFilters ? () => getSummary(cluster, startDate, endDate, filters) : null,
+    hasFilters ? ck(cluster, "fsummary", startDate, endDate, fk) : null,
   );
   const { data: timeline, loading: lTimeline } = useRedivisQuery(
-    () => getTimeline(startDate, endDate, filters),
-    `timeline_${startDate}_${endDate}_${fk}`,
+    () => getTimeline(cluster, startDate, endDate, filters),
+    ck(cluster, "timeline", startDate, endDate, fk),
   );
   const { data: filterOptions, loading: lFilters } = useRedivisQuery(
-    () => getFilterOptions(startDate, endDate),
-    `filters_${startDate}_${endDate}`,
+    () => getFilterOptions(cluster, startDate, endDate),
+    ck(cluster, "filters", startDate, endDate),
   );
   const { data: waitTimes, loading: lWait } = useRedivisQuery(
-    () => getWaitTimes(startDate, endDate, filters),
-    `wait_${startDate}_${endDate}_${fk}`,
+    () => getWaitTimes(cluster, startDate, endDate, filters),
+    ck(cluster, "wait", startDate, endDate, fk),
   );
 
   const queries = [loading, lSummary, lTimeline, lFilters, lWait, ...(hasFilters ? [lFiltered] : [])];
@@ -294,21 +323,24 @@ export default function JobsDashboard({ startDate, endDate, node }) {
   });
 
   // Priced client-side from the same CPU / RAM / GPU columns the SQL aggregate uses, so the
-  // per-row figures and the total agree by construction.
-  const jobsWithCost = (data?.jobs || []).map((job) => {
-    const cost = jobCost({
-      cpus: job.NCPUS,
-      memGb: job.ReqMem_GB,
-      gpus: job.gpu_count,
-      elapsedSeconds: job.ElapsedRaw,
-    });
-    return {
-      ...job,
-      ec2_cost_usd: cost.costUsd,
-      ec2_instance: cost.oversized ? `${cost.instanceType} †` : cost.instanceType,
-      ec2_oversized: cost.oversized,
-    };
-  });
+  // per-row figures and the total agree by construction. Skipped entirely where the cluster has no
+  // trustworthy elapsed time to bill.
+  const jobsWithCost = showCost
+    ? (data?.jobs || []).map((job) => {
+        const cost = jobCost({
+          cpus: job.NCPUS,
+          memGb: job.ReqMem_GB,
+          gpus: job.gpu_count,
+          elapsedSeconds: job.ElapsedRaw,
+        });
+        return {
+          ...job,
+          ec2_cost_usd: cost.costUsd,
+          ec2_instance: cost.oversized ? `${cost.instanceType} †` : cost.instanceType,
+          ec2_oversized: cost.oversized,
+        };
+      })
+    : data?.jobs || [];
 
   return (
     <div className="space-y-6">
@@ -367,7 +399,7 @@ export default function JobsDashboard({ startDate, endDate, node }) {
 
       {!anyLoading && <>
       {hasFilters && filteredSummary && (
-        <MiniCards data={filteredSummary} label="Filtered" />
+        <MiniCards data={filteredSummary} label="Filtered" showCost={showCost} />
       )}
 
       {stateData.length > 0 && (
@@ -411,6 +443,8 @@ export default function JobsDashboard({ startDate, endDate, node }) {
         data={{ ...data, jobs: jobsWithCost }}
         sort={sort}
         setSort={setSort}
+        columns={columns}
+        showCost={showCost}
       />
       </>}
     </div>

@@ -5,7 +5,8 @@ import JobsDashboard from "./components/JobsDashboard";
 import ClusterDashboard from "./components/ClusterDashboard";
 import UserDashboard from "./components/UserDashboard";
 import { useRedivisQuery } from "./hooks/useRedivisQuery";
-import { getFilterOptions } from "./redivis/queries";
+import { getFilterOptions, ck } from "./redivis/queries";
+import { CLUSTER_LIST, DEFAULT_CLUSTER, getCluster } from "./lib/clusters";
 
 const TABS = [
   { id: "jobs", label: "Jobs" },
@@ -130,22 +131,61 @@ function DateRangePicker({ startDate, endDate, onChange }) {
   );
 }
 
-function NodePicker({ nodes, node, onChange, loading }) {
+/**
+ * A combobox rather than a `<select>`, because the node list is a suggestion, not the set of legal
+ * answers: filtering matches the typed name against the node lists in SQL, so a node the list
+ * doesn't offer — a rare one on a large cluster, or one dropped by the token cap — still filters
+ * correctly. A `<select>` cannot express that, and 1,000+ options is unusable anyway.
+ *
+ * The typed value is committed on Enter, on blur, and on an exact match (which is what picking from
+ * the datalist produces). Committing per keystroke would fire the whole query fan-out on every
+ * letter.
+ */
+function NodePicker({ nodes, node, onChange, loading, truncated }) {
+  const [text, setText] = useState(node);
+
+  useEffect(() => {
+    setText(node);
+  }, [node]);
+
+  const commit = (value) => {
+    const trimmed = value.trim();
+    if (trimmed !== node) onChange(trimmed);
+  };
+
+  const suggestions = text
+    ? nodes.filter((n) => n.toLowerCase().includes(text.toLowerCase())).slice(0, 200)
+    : nodes.slice(0, 200);
+
   return (
     <div className="flex items-center gap-2">
-      <select
-        className="border border-black-20 rounded px-3 py-1.5 text-sm bg-white"
-        value={node}
-        onChange={(e) => onChange(e.target.value)}
+      <input
+        list="node-options"
+        className="border border-black-20 rounded px-3 py-1.5 text-sm bg-white w-48"
+        placeholder={loading ? "Loading nodes..." : "All nodes"}
+        value={text}
         disabled={loading}
-      >
-        <option value="">{loading ? "Loading nodes..." : "All nodes"}</option>
-        {nodes.map((n) => (
-          <option key={n} value={n}>
-            {n}
-          </option>
+        onChange={(e) => {
+          const next = e.target.value;
+          setText(next);
+          // An exact hit is almost certainly a datalist selection, so don't make them press Enter.
+          if (nodes.includes(next.trim())) commit(next);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit(text);
+        }}
+        onBlur={() => commit(text)}
+      />
+      <datalist id="node-options">
+        {suggestions.map((n) => (
+          <option key={n} value={n} />
         ))}
-      </select>
+      </datalist>
+      {truncated && (
+        <span className="text-xs text-black-60 max-w-56 leading-tight">
+          Showing the {nodes.length.toLocaleString()} busiest nodes — you can type any node name.
+        </span>
+      )}
       {node && (
         <button
           onClick={() => onChange("")}
@@ -158,31 +198,71 @@ function NodePicker({ nodes, node, onChange, loading }) {
   );
 }
 
+function ClusterToggle({ cluster, onChange }) {
+  return (
+    <div className="flex gap-1">
+      {CLUSTER_LIST.map((c) => (
+        <button
+          key={c.id}
+          onClick={() => onChange(c.id)}
+          className={`px-3 py-1.5 rounded-md text-sm font-semibold transition-colors ${
+            cluster === c.id
+              ? "bg-digital-red text-white"
+              : "text-black-20 hover:bg-black-80"
+          }`}
+        >
+          {c.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function App() {
   const [tab, setTab] = useState("jobs");
   const [startDate, setStartDate] = useState(daysAgo(30));
   const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10));
   const [node, setNode] = useState("");
+  const [cluster, setCluster] = useState(DEFAULT_CLUSTER);
   const [authed, setAuthed] = useState(null);
 
   useEffect(() => {
     redivis.isAuthorized().then(setAuthed);
   }, []);
 
+  const clusterConfig = getCluster(cluster);
+
+  useEffect(() => {
+    document.title = `${clusterConfig.title} – Stanford`;
+  }, [clusterConfig.title]);
+
   // Shares a cache key with the per-tab calls, so this adds no extra query.
   const { data: filterOptions, loading: loadingFilters } = useRedivisQuery(
-    authed ? () => getFilterOptions(startDate, endDate) : null,
-    authed ? `filters_${startDate}_${endDate}` : null,
+    authed ? () => getFilterOptions(clusterConfig, startDate, endDate) : null,
+    authed ? ck(clusterConfig, "filters", startDate, endDate) : null,
   );
 
   const nodes = filterOptions?.nodes || [];
+  const nodesTruncated = filterOptions?.nodesTruncated || false;
 
   // Node lists are scoped to the date range. Keep the selection when the node still ran in the new
   // range (the common case when widening it), and drop it only when it didn't — otherwise the
-  // dropdown would sit on a node with no jobs and every panel would read zero.
+  // picker would sit on a node with no jobs and every panel would read zero.
+  //
+  // Only when the list is known complete, though: it is a truncated suggestion list on a large
+  // cluster, and a typed node that filters perfectly well may simply not be in it. Clearing those
+  // would fight the user on every load.
   useEffect(() => {
-    if (node && filterOptions && !nodes.includes(node)) setNode("");
-  }, [node, filterOptions, nodes]);
+    if (node && filterOptions && !nodesTruncated && !nodes.includes(node)) setNode("");
+  }, [node, filterOptions, nodes, nodesTruncated]);
+
+  // Node names are cluster-specific, so a Yen node must not survive into a Sherlock query. All
+  // three tabs work on both clusters, so the tab selection is left alone.
+  const switchCluster = (id) => {
+    if (id === cluster) return;
+    setCluster(id);
+    setNode("");
+  };
 
   return (
     <div className="min-h-screen bg-fog-light font-sans">
@@ -199,8 +279,12 @@ export default function App() {
 
       <header className="bg-black-su shadow">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-          <h1 className="text-xl font-bold text-white font-serif">Yen Cluster Slurm Statistics</h1>
+          <h1 className="text-xl font-bold text-white font-serif">{clusterConfig.title}</h1>
           <div className="flex items-center gap-3">
+            {/* Switching cluster is a change of context, not a filter, so it sits up here with the
+                tabs rather than down in the filter bar with the date and node pickers. */}
+            <ClusterToggle cluster={cluster} onChange={switchCluster} />
+            <span className="w-px h-6 bg-black-80" aria-hidden="true" />
             <nav className="flex gap-1">
               {TABS.map((t) => (
                 <button
@@ -245,20 +329,32 @@ export default function App() {
                   setEndDate(e);
                 }}
               />
-              <NodePicker
-                nodes={nodes}
-                node={node}
-                onChange={setNode}
-                loading={loadingFilters}
-              />
+              {clusterConfig.features.nodeFilter && (
+                <NodePicker
+                  nodes={nodes}
+                  node={node}
+                  onChange={setNode}
+                  loading={loadingFilters}
+                  truncated={nodesTruncated}
+                />
+              )}
             </div>
           </div>
 
+          {/* An undercounted total must not read as authoritative. */}
+          {clusterConfig.caveat && (
+            <div className="bg-illuminating border-b border-black-20">
+              <div className="max-w-7xl mx-auto px-4 py-2 text-xs text-black-su leading-snug">
+                {clusterConfig.caveat}
+              </div>
+            </div>
+          )}
+
           <main className="max-w-7xl mx-auto px-4 py-4">
-            <SummaryCards startDate={startDate} endDate={endDate} node={node} />
-            {tab === "jobs" && <JobsDashboard startDate={startDate} endDate={endDate} node={node} />}
-            {tab === "cluster" && <ClusterDashboard startDate={startDate} endDate={endDate} node={node} />}
-            {tab === "users" && <UserDashboard startDate={startDate} endDate={endDate} node={node} />}
+            <SummaryCards cluster={clusterConfig} startDate={startDate} endDate={endDate} node={node} />
+            {tab === "jobs" && <JobsDashboard cluster={clusterConfig} startDate={startDate} endDate={endDate} node={node} />}
+            {tab === "cluster" && <ClusterDashboard cluster={clusterConfig} startDate={startDate} endDate={endDate} node={node} />}
+            {tab === "users" && <UserDashboard cluster={clusterConfig} startDate={startDate} endDate={endDate} node={node} />}
           </main>
         </>
       )}

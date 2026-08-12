@@ -1,5 +1,5 @@
 import { useRedivisQuery } from "../hooks/useRedivisQuery";
-import { getClusterUtilization } from "../redivis/queries";
+import { getClusterUtilization, ck } from "../redivis/queries";
 import LoadingProgress from "./LoadingProgress";
 import {
   BarChart,
@@ -39,10 +39,10 @@ function fmtDuration(seconds) {
   return `${d}d ${h % 24}h`;
 }
 
-export default function ClusterDashboard({ startDate, endDate, node }) {
+export default function ClusterDashboard({ cluster, startDate, endDate, node }) {
   const { data, loading, error } = useRedivisQuery(
-    () => getClusterUtilization(startDate, endDate, { node }),
-    `cluster_${startDate}_${endDate}_${node || ""}`,
+    () => getClusterUtilization(cluster, startDate, endDate, { node }),
+    ck(cluster, "cluster", startDate, endDate, node || ""),
   );
 
   const details = [];
@@ -88,7 +88,11 @@ export default function ClusterDashboard({ startDate, endDate, node }) {
           ) : (
             <>
               <span className="text-black-60">Unique nodes used: </span>
-              <span className="font-bold text-xl text-black-su">{data.nodes_used}</span>
+              <span className="font-bold text-xl text-black-su">
+                {/* The count comes from the node index, so a capped index makes it a floor. */}
+                {data.nodes_truncated ? "≥ " : ""}
+                {data.nodes_used}
+              </span>
             </>
           )}
         </div>
