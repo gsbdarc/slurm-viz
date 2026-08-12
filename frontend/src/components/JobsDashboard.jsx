@@ -73,10 +73,55 @@ function fmtWait(minutes) {
   return `${trim(minutes / 1440)}d`;
 }
 
+/** Validated as a categorical set: worst adjacent pair ΔE 11.9 (protan), 20.9 normal vision. */
+const WAIT_COLORS = { median: "#008566", avg: "#E98300", max: "#B83A4B" };
+
+/** A filled dot with a surface ring, so points stay legible where the series overlap. */
+const waitDot = (fill, r = 3) => ({ r, fill, stroke: "#fff", strokeWidth: 1.5 });
+
 /** Gridlines at intervals people think in, rather than at powers of ten. */
 const WAIT_TICKS_MINUTES = [
   1 / 60, 1 / 6, 1, 5, 15, 60, 360, 1440, 4320, 10080, 43200, 129600,
 ];
+
+/**
+ * Every period in the range, including the ones with no jobs.
+ *
+ * `GROUP BY period` only returns periods that had jobs, so an idle month is simply absent from the
+ * result. Plotted as-is, the surviving points are spaced evenly and a gap silently closes up:
+ * December sits next to July as though they were consecutive, and a line drawn between them implies
+ * a trend across months that hold no data at all.
+ *
+ * Keys are UTC-based ISO dates, matching what `periodKey` derives from the query's own rows, and
+ * the boundaries mirror BigQuery's `DATE_TRUNC` — months to the 1st, weeks back to Sunday.
+ */
+function periodSequenceKeys(startDate, endDate, gran) {
+  const start = new Date(`${startDate}T00:00:00Z`);
+  const end = new Date(`${endDate}T00:00:00Z`);
+  if (isNaN(start.getTime()) || isNaN(end.getTime()) || start > end) return [];
+
+  let cur;
+  if (gran === "month") {
+    cur = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1));
+  } else if (gran === "week") {
+    cur = new Date(start);
+    cur.setUTCDate(cur.getUTCDate() - cur.getUTCDay());
+  } else {
+    cur = new Date(start);
+  }
+
+  const keys = [];
+  // The granularity is derived from the range, so this cannot run away; the cap is a backstop.
+  while (cur <= end && keys.length < 2000) {
+    keys.push(cur.toISOString().slice(0, 10));
+    if (gran === "month") {
+      cur = new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() + 1, 1));
+    } else {
+      cur = new Date(cur.getTime() + (gran === "week" ? 7 : 1) * 86400000);
+    }
+  }
+  return keys;
+}
 
 const JOB_COLUMNS = [
   { key: "JobID", label: "Job ID" },
@@ -324,7 +369,8 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
   // A log scale cannot plot that zero either, so the precision has to survive to the renderer.
   const waitByDate = {};
   rawWait.forEach((r) => {
-    const d = r.period instanceof Date ? r.period : typeof r.period === "number" ? new Date(r.period) : new Date(String(r.period).length === 10 ? r.period + "T00:00:00" : r.period);
+    // UTC-based, to match the keys the timeline sequence generates.
+    const d = r.period instanceof Date ? r.period : typeof r.period === "number" ? new Date(r.period) : new Date(String(r.period).length === 10 ? r.period + "T00:00:00Z" : r.period);
     const key = isNaN(d.getTime()) ? String(r.period) : d.toISOString().slice(0, 10);
     // A log axis has no room for zero or negative values; drop them so the line breaks instead.
     const pos = (v) => (v != null && v > 0 ? v : null);
@@ -342,7 +388,9 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
     if (val instanceof Date) return val;
     if (typeof val === "number") return new Date(val);
     const s = String(val);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(s + "T00:00:00");
+    // Parsed as UTC, not local: these are whole dates, and reading them in a zone ahead of UTC
+    // would shift them a day and mislabel the period.
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(s + "T00:00:00Z");
     return new Date(s);
   }
 
@@ -368,10 +416,27 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
     return d.toISOString().slice(0, 10);
   }
 
-  const combinedData = (timeline?.data || []).map((r) => {
-    const key = periodKey(r.period);
-    return { date: key, label: formatPeriodLabel(r.period), count: r.count, ...waitByDate[key] };
+  const countByKey = {};
+  (timeline?.data || []).forEach((r) => {
+    countByKey[periodKey(r.period)] = r.count;
   });
+
+  // Walk the whole range rather than the rows that came back, so an idle period occupies its own
+  // slot on the axis. Note the two series treat a missing period differently, and must: no jobs
+  // submitted really is a count of zero, but it is *not* a wait of zero — there was nothing to
+  // wait. Leaving the wait null lets `connectNulls={false}` break the line instead of drawing a
+  // trend through months that hold no data.
+  const sequence = periodSequenceKeys(startDate, endDate, timelineGran);
+  const keys = sequence.length ? sequence : Object.keys(countByKey).sort();
+
+  const combinedData = keys.map((key) => ({
+    date: key,
+    label: formatPeriodLabel(key),
+    count: countByKey[key] ?? 0,
+    avg: waitByDate[key]?.avg ?? null,
+    median: waitByDate[key]?.median ?? null,
+    max: waitByDate[key]?.max ?? null,
+  }));
 
   // A log axis needs an explicit positive domain — recharts cannot infer one. Pad by half a
   // multiplicative step so the extreme points sit inside the plot rather than on its edge, and
@@ -521,9 +586,14 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
               />
               <Legend />
               <Bar isAnimationActive={false} yAxisId="left" dataKey="count" fill="#4298B5" name="Jobs" opacity={0.4} />
-              <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="median" stroke="#008566" strokeWidth={2} dot={false} name="Median wait" connectNulls={false} />
-              <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="avg" stroke="#E98300" strokeWidth={2} dot={false} name="Avg wait" connectNulls={false} />
-              <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="max" stroke="#B83A4B" strokeWidth={1} strokeDasharray="4 4" dot={false} name="Max wait" connectNulls={false} />
+              {/* Dots are not decoration here. Once idle periods break the lines, a period whose
+                  neighbours are both empty becomes a single point, and a lone point on a dotless
+                  line draws nothing at all — Dec 2025 above has 33 jobs averaging a 94-minute wait
+                  and would otherwise be invisible. They carry an explicit fill because recharts
+                  defaults a dot to white, which on a white card is the same as not drawing it. */}
+              <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="median" stroke={WAIT_COLORS.median} strokeWidth={2} dot={waitDot(WAIT_COLORS.median)} activeDot={{ r: 5 }} name="Median wait" connectNulls={false} />
+              <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="avg" stroke={WAIT_COLORS.avg} strokeWidth={2} dot={waitDot(WAIT_COLORS.avg)} activeDot={{ r: 5 }} name="Avg wait" connectNulls={false} />
+              <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="max" stroke={WAIT_COLORS.max} strokeWidth={1} strokeDasharray="4 4" dot={waitDot(WAIT_COLORS.max, 2.5)} activeDot={{ r: 4 }} name="Max wait" connectNulls={false} />
             </ComposedChart>
           </ResponsiveContainer>
         </div>
