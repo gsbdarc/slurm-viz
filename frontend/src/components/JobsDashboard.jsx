@@ -58,6 +58,26 @@ function MiniCards({ data, label, showCost, showStates }) {
   );
 }
 
+/**
+ * A duration in minutes, written the way someone reads a queue wait.
+ *
+ * The wait series span five orders of magnitude — a median of a few seconds against a maximum of
+ * over a week — so a single fixed unit makes one end of the axis unreadable whichever end you pick.
+ */
+function fmtWait(minutes) {
+  if (minutes == null || !Number.isFinite(minutes)) return "—";
+  const trim = (n) => String(+n.toFixed(1)).replace(/\.0$/, "");
+  if (minutes < 1) return `${Math.round(minutes * 60)}s`;
+  if (minutes < 60) return `${trim(minutes)}m`;
+  if (minutes < 1440) return `${trim(minutes / 60)}h`;
+  return `${trim(minutes / 1440)}d`;
+}
+
+/** Gridlines at intervals people think in, rather than at powers of ten. */
+const WAIT_TICKS_MINUTES = [
+  1 / 60, 1 / 6, 1, 5, 15, 60, 360, 1440, 4320, 10080, 43200, 129600,
+];
+
 const JOB_COLUMNS = [
   { key: "JobID", label: "Job ID" },
   { key: "JobName", label: "Name" },
@@ -297,18 +317,21 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
       : [];
 
   const rawWait = waitTimes?.data || [];
-  const maxWaitMin = Math.max(0, ...rawWait.map((r) => r.max_wait_minutes || 0));
-  const waitUnit = maxWaitMin >= 1440 ? "days" : maxWaitMin >= 60 ? "hours" : "minutes";
-  const waitDivisor = waitUnit === "days" ? 1440 : waitUnit === "hours" ? 60 : 1;
 
+  // Kept in raw minutes at full precision. Converting to a single unit chosen from the maximum and
+  // rounding to one decimal used to destroy the very series this chart is about: a median wait of
+  // 0.23 minutes expressed in days is 0.00016, which rounded to 0.0 and drew flat along the axis.
+  // A log scale cannot plot that zero either, so the precision has to survive to the renderer.
   const waitByDate = {};
   rawWait.forEach((r) => {
     const d = r.period instanceof Date ? r.period : typeof r.period === "number" ? new Date(r.period) : new Date(String(r.period).length === 10 ? r.period + "T00:00:00" : r.period);
     const key = isNaN(d.getTime()) ? String(r.period) : d.toISOString().slice(0, 10);
+    // A log axis has no room for zero or negative values; drop them so the line breaks instead.
+    const pos = (v) => (v != null && v > 0 ? v : null);
     waitByDate[key] = {
-      avg: r.avg_wait_minutes != null ? +(r.avg_wait_minutes / waitDivisor).toFixed(1) : null,
-      median: r.median_wait_minutes != null ? +(r.median_wait_minutes / waitDivisor).toFixed(1) : null,
-      max: r.max_wait_minutes != null ? +(r.max_wait_minutes / waitDivisor).toFixed(1) : null,
+      avg: pos(r.avg_wait_minutes),
+      median: pos(r.median_wait_minutes),
+      max: pos(r.max_wait_minutes),
     };
   });
 
@@ -349,6 +372,25 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
     const key = periodKey(r.period);
     return { date: key, label: formatPeriodLabel(r.period), count: r.count, ...waitByDate[key] };
   });
+
+  // A log axis needs an explicit positive domain — recharts cannot infer one. Pad by half a
+  // multiplicative step so the extreme points sit inside the plot rather than on its edge, and
+  // widen a degenerate range so a single period still renders an axis.
+  const waitValues = combinedData
+    .flatMap((d) => [d.avg, d.median, d.max])
+    .filter((v) => v != null && v > 0);
+  let waitDomain = null;
+  let waitTicks = [];
+  if (waitValues.length) {
+    let lo = Math.min(...waitValues) / 1.5;
+    let hi = Math.max(...waitValues) * 1.5;
+    if (hi / lo < 4) {
+      lo /= 2;
+      hi *= 2;
+    }
+    waitDomain = [lo, hi];
+    waitTicks = WAIT_TICKS_MINUTES.filter((t) => t >= lo && t <= hi);
+  }
 
   // Priced client-side from the same CPU / RAM / GPU columns the SQL aggregate uses, so the
   // per-row figures and the total agree by construction. Skipped entirely where the cluster has no
@@ -462,13 +504,26 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="label" />
               <YAxis yAxisId="left" label={{ value: "Jobs", angle: -90, position: "insideLeft" }} />
-              <YAxis yAxisId="right" orientation="right" label={{ value: `Wait (${waitUnit})`, angle: 90, position: "insideRight" }} />
-              <Tooltip />
+              <YAxis
+                yAxisId="right"
+                orientation="right"
+                scale="log"
+                domain={waitDomain || ["auto", "auto"]}
+                ticks={waitTicks.length ? waitTicks : undefined}
+                tickFormatter={fmtWait}
+                allowDataOverflow
+                label={{ value: "Queue wait (log)", angle: 90, position: "insideRight" }}
+              />
+              <Tooltip
+                formatter={(v, name) =>
+                  name === "Jobs" ? v.toLocaleString() : fmtWait(v)
+                }
+              />
               <Legend />
               <Bar isAnimationActive={false} yAxisId="left" dataKey="count" fill="#4298B5" name="Jobs" opacity={0.4} />
-              <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="median" stroke="#008566" strokeWidth={2} dot={false} name={`Median (${waitUnit})`} />
-              <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="avg" stroke="#E98300" strokeWidth={2} dot={false} name={`Avg (${waitUnit})`} />
-              <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="max" stroke="#B83A4B" strokeWidth={1} strokeDasharray="4 4" dot={false} name={`Max (${waitUnit})`} />
+              <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="median" stroke="#008566" strokeWidth={2} dot={false} name="Median wait" connectNulls={false} />
+              <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="avg" stroke="#E98300" strokeWidth={2} dot={false} name="Avg wait" connectNulls={false} />
+              <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="max" stroke="#B83A4B" strokeWidth={1} strokeDasharray="4 4" dot={false} name="Max wait" connectNulls={false} />
             </ComposedChart>
           </ResponsiveContainer>
         </div>
