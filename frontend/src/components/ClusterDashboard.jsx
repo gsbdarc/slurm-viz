@@ -39,7 +39,7 @@ function fmtDuration(seconds) {
   return `${d}d ${h % 24}h`;
 }
 
-export default function ClusterDashboard({ cluster, startDate, endDate, node }) {
+export default function ClusterDashboard({ cluster, startDate, endDate, node, group }) {
   const showMemory = cluster.features.memory;
   const showWaits = cluster.features.waitTimes;
   // Where runtimes are last-seen values rather than final ones, an average of them is an average of
@@ -50,8 +50,8 @@ export default function ClusterDashboard({ cluster, startDate, endDate, node }) 
     : undefined;
 
   const { data, loading, error } = useRedivisQuery(
-    () => getClusterUtilization(cluster, startDate, endDate, { node }),
-    ck(cluster, "cluster", startDate, endDate, node || ""),
+    () => getClusterUtilization(cluster, startDate, endDate, { node, group }),
+    ck(cluster, "cluster", startDate, endDate, node || "", group || ""),
   );
 
   const details = [];
@@ -133,6 +133,7 @@ export default function ClusterDashboard({ cluster, startDate, endDate, node }) 
             <ResponsiveContainer width="100%" height={300}>
               <PieChart>
                 <Pie
+
                   data={partitionData}
                   dataKey="value"
                   nameKey="name"

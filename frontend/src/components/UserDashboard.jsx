@@ -27,23 +27,26 @@ const COLORS = [
 
 const USER_COLUMNS = [
   { key: "User", label: "User" },
+  { key: "Group", label: "Group", feature: "groups" },
   { key: "job_count", label: "Jobs", numeric: true },
   { key: "total_cpus", label: "Total CPUs", numeric: true },
   { key: "total_elapsed", label: "Elapsed (s)", numeric: true },
   { key: "cpu_hours", label: "CPU Hours", numeric: true },
-  { key: "ec2_cost_usd", label: "EC2 Cost", currency: true },
+  { key: "ec2_cost_usd", label: "EC2 Cost", currency: true, feature: "ec2Cost" },
   { key: "total_wait_hours", label: "Queue Wait (hrs)", numeric: true },
 ];
+
+/** Columns the cluster can actually populate — same idiom as `jobColumnsFor`. */
+function userColumnsFor(cluster) {
+  return USER_COLUMNS.filter((c) => !c.feature || cluster.features[c.feature]);
+}
 
 const numericUserCols = new Set(
   USER_COLUMNS.filter((c) => c.numeric || c.currency).map((c) => c.key),
 );
 
-function UserTable({ users, showCost }) {
+function UserTable({ users, columns }) {
   const [sort, setSort] = useState({ col: "cpu_hours", asc: false });
-  const columns = showCost
-    ? USER_COLUMNS
-    : USER_COLUMNS.filter((c) => c.key !== "ec2_cost_usd");
 
   const handleSort = (col) => {
     setSort((prev) =>
@@ -112,12 +115,16 @@ function UserTable({ users, showCost }) {
   );
 }
 
-export default function UserDashboard({ cluster, startDate, endDate, node }) {
+export default function UserDashboard({ cluster, startDate, endDate, node, group }) {
   const [partition, setPartition] = useState("");
   const showCost = cluster.features.ec2Cost;
 
-  const filters = { partition: partition || undefined, node: node || undefined };
-  const fk = `${partition}_${node || ""}`;
+  const filters = {
+    partition: partition || undefined,
+    node: node || undefined,
+    group: group || undefined,
+  };
+  const fk = `${partition}_${node || ""}_${group || ""}`;
 
   const { data: usersData, loading, error } = useRedivisQuery(
     () => getUserSummaries(cluster, startDate, endDate, filters),
@@ -200,7 +207,7 @@ export default function UserDashboard({ cluster, startDate, endDate, node }) {
   );
   const periodLabel = periodGranularity === "day" ? "Day" : periodGranularity === "week" ? "Week" : "Month";
 
-  const suffixParts = [partition, node].filter(Boolean);
+  const suffixParts = [partition, node, group].filter(Boolean);
   const partitionSuffix = suffixParts.length ? ` (${suffixParts.join(", ")})` : "";
 
   return (
@@ -302,6 +309,7 @@ export default function UserDashboard({ cluster, startDate, endDate, node }) {
               <Legend />
               {partitions.map((p, i) => (
                 <Bar
+
                   key={p}
                   dataKey={p}
                   stackId="a"
@@ -314,7 +322,7 @@ export default function UserDashboard({ cluster, startDate, endDate, node }) {
         </div>
       )}
 
-      <UserTable users={users} showCost={showCost} />
+      <UserTable users={users} columns={userColumnsFor(cluster)} />
       </>}
     </div>
   );

@@ -3,12 +3,14 @@ import { getSummary, ck } from "../redivis/queries";
 import { formatUsd, PRICING_DISCLOSURE } from "../lib/ec2";
 import LoadingProgress from "./LoadingProgress";
 
-export default function SummaryCards({ cluster, startDate, endDate, node }) {
+export default function SummaryCards({ cluster, startDate, endDate, node, group }) {
   const showCost = cluster.features.ec2Cost;
 
+  // This key is duplicated verbatim in JobsDashboard so the two share one query. Keep the argument
+  // order identical there if it ever changes.
   const { data, loading, error } = useRedivisQuery(
-    () => getSummary(cluster, startDate, endDate, { node }),
-    ck(cluster, "summary", startDate, endDate, node || ""),
+    () => getSummary(cluster, startDate, endDate, { node, group }),
+    ck(cluster, "summary", startDate, endDate, node || "", group || ""),
   );
 
   if (loading) return <LoadingProgress completed={0} total={1} label="Loading summary" details={[]} />;

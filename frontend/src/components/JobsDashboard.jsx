@@ -191,7 +191,7 @@ function JobTable({ data, sort, setSort, columns, showCost }) {
   );
 }
 
-export default function JobsDashboard({ cluster, startDate, endDate, node }) {
+export default function JobsDashboard({ cluster, startDate, endDate, node, group }) {
   const [localFilters, setLocalFilters] = useState({
     state: "",
     user: "",
@@ -209,19 +209,20 @@ export default function JobsDashboard({ cluster, startDate, endDate, node }) {
   // `node` is a global filter owned by App; the rest are local to this tab. The summary strip
   // above already reflects `node`, so only the local filters justify a second "Filtered" row —
   // otherwise it would restate the same numbers.
-  const filters = { ...localFilters, state: activeState, node };
+  const filters = { ...localFilters, state: activeState, node, group };
   const hasFilters = Boolean(
     activeState || localFilters.user || localFilters.partition,
   );
-  const fk = `${activeState}_${localFilters.user}_${localFilters.partition}_${node || ""}`;
+  const fk = `${activeState}_${localFilters.user}_${localFilters.partition}_${node || ""}_${group || ""}`;
 
   const { data, loading, error } = useRedivisQuery(
     () => getJobs(cluster, startDate, endDate, filters),
     ck(cluster, "jobs", startDate, endDate, fk),
   );
+  // Deliberately identical to SummaryCards' key so the two share one query rather than issuing two.
   const { data: summary, loading: lSummary } = useRedivisQuery(
-    () => getSummary(cluster, startDate, endDate, { node }),
-    ck(cluster, "summary", startDate, endDate, node || ""),
+    () => getSummary(cluster, startDate, endDate, { node, group }),
+    ck(cluster, "summary", startDate, endDate, node || "", group || ""),
   );
   const { data: filteredSummary, loading: lFiltered } = useRedivisQuery(
     hasFilters ? () => getSummary(cluster, startDate, endDate, filters) : null,
@@ -266,6 +267,7 @@ export default function JobsDashboard({ cluster, startDate, endDate, node }) {
     filters.state && `state: ${filters.state}`,
     filters.partition && `partition: ${filters.partition}`,
     node && `node: ${node}`,
+    group && `group: ${group}`,
   ].filter(Boolean);
   const filterSuffix = filterParts.length > 0 ? ` (${filterParts.join(", ")})` : "";
 
