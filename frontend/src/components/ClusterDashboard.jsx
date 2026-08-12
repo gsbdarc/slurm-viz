@@ -59,17 +59,43 @@ export default function ClusterDashboard({ startDate, endDate, node }) {
 
   const cpuData = data.cpu_by_partition || [];
 
+  // A node filter narrows this tab to one machine, which usually leaves a single partition. A
+  // one-slice pie and a lone bar convey nothing the table below doesn't state more precisely, so
+  // the "by Partition" charts are only worth drawing when there's something to compare.
+  const showPartitionCharts = partitionData.length > 1;
+
+  // `nodes_used` counts every node the matching jobs touched. Under a node filter that's still
+  // >1 whenever a multi-node job (e.g. `yen-gpu[1-4]`) also ran elsewhere — true, but it reads as
+  // a contradiction next to a single-node filter unless it's spelled out.
+  const alsoTouched = Math.max(0, (data.nodes_used || 0) - 1);
+
   return (
     <div className="space-y-6">
-      {data.nodes_used && (
+      {data.nodes_used > 0 && (
         <div className="bg-white rounded-lg shadow border border-black-20 p-4">
-          <span className="text-black-60">Unique nodes used: </span>
-          <span className="font-bold text-xl text-black-su">{data.nodes_used}</span>
+          {node ? (
+            <>
+              <span className="text-black-60">Filtered to node </span>
+              <span className="font-bold text-xl text-black-su">{node}</span>
+              {alsoTouched > 0 && (
+                <span className="text-black-60">
+                  {" "}
+                  — some of these jobs also spanned {alsoTouched} other{" "}
+                  {alsoTouched === 1 ? "node" : "nodes"}
+                </span>
+              )}
+            </>
+          ) : (
+            <>
+              <span className="text-black-60">Unique nodes used: </span>
+              <span className="font-bold text-xl text-black-su">{data.nodes_used}</span>
+            </>
+          )}
         </div>
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {partitionData.length > 0 && (
+        {showPartitionCharts && (
           <div className="bg-white rounded-lg shadow border border-black-20 p-4">
             <h3 className="text-lg font-semibold text-black-su mb-3">Jobs by Partition</h3>
             <ResponsiveContainer width="100%" height={300}>
@@ -97,7 +123,7 @@ export default function ClusterDashboard({ startDate, endDate, node }) {
           </div>
         )}
 
-        {cpuData.length > 0 && (
+        {showPartitionCharts && cpuData.length > 0 && (
           <div className="bg-white rounded-lg shadow border border-black-20 p-4">
             <h3 className="text-lg font-semibold text-black-su mb-3">
               CPU Usage by Partition
