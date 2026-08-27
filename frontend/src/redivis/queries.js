@@ -463,6 +463,40 @@ export function nodeMatchSql(col, node, rejectValuePattern) {
 }
 
 /** Rows where the job genuinely waited, i.e. where `Start` is a fact rather than a forecast. */
+/**
+ * Which agent submitted a job, as a STRING expression, or NULL when nothing matched.
+ *
+ * Reads submission provenance (`WorkDir`, `SubmitLine`) against the per-agent path patterns in
+ * `clusters.agentDetection`. Returns `null` for a cluster without the feature so callers can drop
+ * the column entirely rather than emit SQL against a table that lacks those columns — Sherlock's
+ * squeue dump has neither.
+ *
+ * Agents are tested in declaration order and the first match wins; the patterns are disjoint in
+ * practice, and a CASE keeps one job from being counted under two agents if that ever stops being
+ * true.
+ *
+ * Each source column is tested separately and OR'd, rather than concatenated and tested once: a
+ * CONCAT can manufacture a match that spans the join, where one column happens to end `/tmp/claude-`
+ * and the next begins with digits. Each is wrapped in IFNULL because `REGEXP_CONTAINS(NULL, ...)` is
+ * NULL rather than false, and a NULL disjunct would mask a real match on the other column.
+ */
+function agentSql(cluster) {
+  const cfg = cluster.agentDetection;
+  if (!cluster.features?.agentDetection || !cfg) return null;
+  const c = cols(cluster);
+  const sources = cfg.columns.map((k) => c[k]).filter(Boolean);
+  if (!sources.length) return null;
+  const whens = cfg.agents
+    .map((a) => {
+      const test = sources
+        .map((col) => `REGEXP_CONTAINS(IFNULL(${col}, ''), ${sqlRegex(a.pattern)})`)
+        .join(" OR ");
+      return `WHEN ${test} THEN ${sqlString(a.label)}`;
+    })
+    .join("\n              ");
+  return `CASE ${whens}\n              ELSE NULL END`;
+}
+
 function waitCondSql(cluster) {
   const c = cols(cluster);
   const parts = [`${c.start} IS NOT NULL`, `${c.start} > ${c.submit}`];
@@ -499,12 +533,25 @@ async function buildWhere(cluster, start, end, filters = {}, extra = []) {
   }
   // The `c.group` guard keeps a stale selection from emitting SQL against a column Yen lacks.
   if (group && c.group) conditions.push(`${c.group} = ${sqlString(group)}`);
+  // Same guard shape: `agentSql` returns null on a cluster without provenance columns, so a stale
+  // toggle carried over from the Yen tab emits nothing rather than failing against Sherlock.
+  if (filters.agentOnly) {
+    const agent = agentSql(cluster);
+    if (agent) conditions.push(`(${agent}) IS NOT NULL`);
+  }
   return conditions.join(" AND ");
 }
 
 /** Stable cache-key fragment for a filter set. */
 function filterKey(filters = {}) {
-  return [filters.state, filters.user, filters.partition, filters.node, filters.group]
+  return [
+    filters.state,
+    filters.user,
+    filters.partition,
+    filters.node,
+    filters.group,
+    filters.agentOnly ? "agent" : "",
+  ]
     .map((v) => v || "")
     .join("|");
 }
@@ -686,6 +733,11 @@ export async function getJobs(cluster, start, end, filters = {}) {
     ? `, SUM(${frag.ec2Cost}) AS total_ec2_cost_usd`
     : "";
 
+  // Null on clusters without provenance columns, in which case the column is omitted from the
+  // SELECT entirely and the dashboard's `agent` guard hides the UI.
+  const agent = agentSql(cluster);
+  const agentSelect = agent ? `${agent} AS \`Agent\`,` : "";
+
   const [countRows, rows] = await Promise.all([
     runQuery(
       cluster,
@@ -708,6 +760,7 @@ export async function getJobs(cluster, start, end, filters = {}) {
               ${c.start} AS \`Start\`,
               ${c.end || "CAST(NULL AS STRING)"} AS \`End\`,
               ${c.nodeList} AS \`NodeList\`,
+              ${agentSelect}
               \`_mem_gb\` AS ReqMem_GB,
               \`_gpu_count\` AS gpu_count,
               ${waitSecondsSql(cluster)} AS wait_seconds
