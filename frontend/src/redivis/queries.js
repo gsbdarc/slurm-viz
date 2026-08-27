@@ -958,6 +958,94 @@ export async function getWaitTimes(cluster, start, end, filters = {}) {
   return { granularity: gran, data: rows };
 }
 
+/**
+ * One row per agent: job count, distinct users, CPU hours, and first/last submission.
+ *
+ * Jobs with no agent marker are grouped under a NULL agent and returned alongside the rest, so the
+ * dashboard can show agent work as a *share* of the range rather than an unanchored count. Callers
+ * split the NULL row out; keeping it in one query keeps the two numbers consistent.
+ */
+export async function getAgentSummaries(cluster, start, end, filters = {}) {
+  const c = cols(cluster);
+  const agent = agentSql(cluster);
+  if (!agent) return [];
+  const [where, frag] = await Promise.all([
+    buildWhere(cluster, start, end, filters),
+    sqlFragments(cluster),
+  ]);
+  const cost = frag.ec2Cost ? `, SUM(${frag.ec2Cost}) AS ec2_cost_usd` : "";
+
+  return runQuery(
+    cluster,
+    `WITH ${frag.cte}
+     SELECT ${agent} AS agent,
+            COUNT(*) AS job_count,
+            COUNT(DISTINCT ${c.user}) AS unique_users,
+            SUM(${c.ncpus} * ${cluster.elapsedSecondsSql}) / 3600.0 AS cpu_hours,
+            MIN(${c.submit}) AS first_submit,
+            MAX(${c.submit}) AS last_submit${cost}
+     FROM jobs WHERE ${where}
+     GROUP BY agent ORDER BY job_count DESC`,
+    ck(cluster, "agent_summaries", start, end, filterKey(filters)),
+  );
+}
+
+/**
+ * Agent jobs and distinct agent users per period — the trend series.
+ *
+ * Only rows with an agent are returned; a NULL-agent bucket would dwarf every agent series on the
+ * same axis and make the trend unreadable. The share-of-total figure comes from
+ * `getAgentSummaries`, which does keep the NULL row.
+ */
+export async function getAgentsByPeriod(cluster, start, end, filters = {}) {
+  const c = cols(cluster);
+  const agent = agentSql(cluster);
+  if (!agent) return { granularity: "month", data: [] };
+  const where = await buildWhere(cluster, start, end, filters);
+  const [gran, expr] = granularity(cluster, start, end);
+
+  const rows = await runQuery(
+    cluster,
+    `WITH ${plainCte(cluster)}
+     SELECT ${expr} AS period,
+            ${agent} AS agent,
+            COUNT(*) AS job_count,
+            COUNT(DISTINCT ${c.user}) AS unique_users
+     FROM jobs
+     WHERE ${where} AND (${agent}) IS NOT NULL
+     GROUP BY period, agent ORDER BY period`,
+    ck(cluster, "agents_period", start, end, filterKey(filters)),
+  );
+
+  return { granularity: gran, data: rows };
+}
+
+/**
+ * Per-user agent usage: which agents a user submits with, and how much.
+ *
+ * Restricted to agent-submitted jobs — a user's non-agent work is already the Users tab's job.
+ */
+export async function getAgentUsers(cluster, start, end, filters = {}) {
+  const c = cols(cluster);
+  const agent = agentSql(cluster);
+  if (!agent) return [];
+  const where = await buildWhere(cluster, start, end, filters);
+
+  return runQuery(
+    cluster,
+    `WITH ${plainCte(cluster)}
+     SELECT ${c.user} AS \`User\`,
+            ${agent} AS agent,
+            COUNT(*) AS job_count,
+            SUM(${c.ncpus} * ${cluster.elapsedSecondsSql}) / 3600.0 AS cpu_hours,
+            MAX(${c.submit}) AS last_submit
+     FROM jobs
+     WHERE ${where} AND (${agent}) IS NOT NULL
+     GROUP BY \`User\`, agent ORDER BY job_count DESC`,
+    ck(cluster, "agent_users", start, end, filterKey(filters)),
+  );
+}
+
 export async function getUsersByPeriod(cluster, start, end, filters = {}) {
   const c = cols(cluster);
   const where = await buildWhere(cluster, start, end, filters);

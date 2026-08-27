@@ -3,6 +3,7 @@ import { useRedivisQuery } from "../hooks/useRedivisQuery";
 import { getSummary, getJobs, getTimeline, getFilterOptions, getWaitTimes, ck } from "../redivis/queries";
 import { jobCost, formatUsd } from "../lib/ec2";
 import LoadingProgress from "./LoadingProgress";
+import { parsePeriod, formatPeriod } from "../lib/periods";
 import {
   BarChart,
   Bar,
@@ -409,33 +410,6 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
 
   const timelineGran = timeline?.granularity || "day";
 
-  function parsePeriod(val) {
-    if (val == null) return null;
-    if (val instanceof Date) return val;
-    if (typeof val === "number") return new Date(val);
-    const s = String(val);
-    // Parsed as UTC, not local: these are whole dates, and reading them in a zone ahead of UTC
-    // would shift them a day and mislabel the period.
-    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(s + "T00:00:00Z");
-    return new Date(s);
-  }
-
-  function formatPeriodLabel(val) {
-    const d = parsePeriod(val);
-    if (!d || isNaN(d.getTime())) return String(val);
-    const utc = { timeZone: "UTC" };
-    const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric", ...utc });
-    if (timelineGran === "week") {
-      const end = new Date(d);
-      end.setDate(end.getDate() + 6);
-      return `${fmt(d)} – ${fmt(end)}`;
-    }
-    if (timelineGran === "month") {
-      return d.toLocaleDateString("en-US", { month: "short", year: "numeric", ...utc });
-    }
-    return fmt(d);
-  }
-
   function periodKey(val) {
     const d = parsePeriod(val);
     if (!d || isNaN(d.getTime())) return String(val);
@@ -457,7 +431,7 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
 
   const combinedData = keys.map((key) => ({
     date: key,
-    label: formatPeriodLabel(key),
+    label: formatPeriod(key, timelineGran),
     count: countByKey[key] ?? 0,
     avg: waitByDate[key]?.avg ?? null,
     median: waitByDate[key]?.median ?? null,

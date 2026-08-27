@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useRedivisQuery } from "../hooks/useRedivisQuery";
 import { getUserSummaries, getUsersByPeriod, getFilterOptions, ck } from "../redivis/queries";
 import { formatUsd } from "../lib/ec2";
+import { formatPeriod, periodSortKey, periodLabel } from "../lib/periods";
 import LoadingProgress from "./LoadingProgress";
 import {
   BarChart,
@@ -173,46 +174,16 @@ export default function UserDashboard({ cluster, startDate, endDate, node, group
     ...new Set(periodRows.map((r) => r.Partition)),
   ].sort();
 
-  function parsePeriod(val) {
-    if (val == null) return null;
-    if (val instanceof Date) return val;
-    if (typeof val === "number") return new Date(val);
-    const s = String(val);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(s + "T00:00:00");
-    return new Date(s);
-  }
-
-  function formatPeriod(val) {
-    const d = parsePeriod(val);
-    if (!d || isNaN(d.getTime())) return String(val);
-    const utc = { timeZone: "UTC" };
-    if (periodGranularity === "month")
-      return d.toLocaleDateString("en-US", { month: "short", year: "numeric", ...utc });
-    if (periodGranularity === "week") {
-      const end = new Date(d);
-      end.setDate(end.getDate() + 6);
-      const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric", ...utc });
-      return `${fmt(d)} – ${fmt(end)}`;
-    }
-    return d.toLocaleDateString("en-US", { month: "short", day: "numeric", ...utc });
-  }
-
-  function periodSortKey(val) {
-    const d = parsePeriod(val);
-    if (!d || isNaN(d.getTime())) return String(val);
-    return d.toISOString();
-  }
-
   const periodMap = {};
   periodRows.forEach((r) => {
     const sortKey = periodSortKey(r.period);
-    if (!periodMap[sortKey]) periodMap[sortKey] = { period: formatPeriod(r.period), _sort: sortKey };
+    if (!periodMap[sortKey]) periodMap[sortKey] = { period: formatPeriod(r.period, periodGranularity), _sort: sortKey };
     periodMap[sortKey][r.Partition] = r.unique_users;
   });
   const periodData = Object.values(periodMap).sort((a, b) =>
     a._sort.localeCompare(b._sort),
   );
-  const periodLabel = periodGranularity === "day" ? "Day" : periodGranularity === "week" ? "Week" : "Month";
+  const granLabel = periodLabel(periodGranularity);
 
   const suffixParts = [partition, node, group].filter(Boolean);
   const partitionSuffix = suffixParts.length ? ` (${suffixParts.join(", ")})` : "";
@@ -305,7 +276,7 @@ export default function UserDashboard({ cluster, startDate, endDate, node, group
       {periodData.length > 0 && (
         <div className="bg-white rounded-lg shadow border border-black-20 p-4">
           <h3 className="text-lg font-semibold text-black-su mb-3">
-            Unique Users by {periodLabel} by Partition{partitionSuffix}
+            Unique Users by {granLabel} by Partition{partitionSuffix}
           </h3>
           <ResponsiveContainer width="100%" height={350}>
             <BarChart data={periodData}>
