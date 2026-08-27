@@ -3,6 +3,7 @@ import { useRedivisQuery } from "../hooks/useRedivisQuery";
 import { getSummary, getJobs, getTimeline, getFilterOptions, getWaitTimes, ck } from "../redivis/queries";
 import { jobCost, formatUsd } from "../lib/ec2";
 import LoadingProgress from "./LoadingProgress";
+import { parsePeriod, formatPeriod } from "../lib/periods";
 import {
   BarChart,
   Bar,
@@ -129,6 +130,15 @@ const JOB_COLUMNS = [
   { key: "User", label: "User" },
   { key: "Partition", label: "Partition" },
   { key: "State", label: "State", feature: "jobStates" },
+  {
+    key: "Agent",
+    label: "Agent",
+    feature: "agentDetection",
+    title:
+      "The AI coding agent whose scratch or worktree path appears in this job's WorkDir or " +
+      "SubmitLine. Blank means no such path — most often a person, but also an agent that " +
+      "submitted a script from the project tree, which leaves no trace. A floor, not a census.",
+  },
   { key: "NCPUS", label: "CPUs", numeric: true },
   { key: "ReqMem_GB", label: "Memory (GB)", numeric: true, feature: "memory" },
   { key: "gpu_count", label: "GPUs", numeric: true, feature: "gpus" },
@@ -261,24 +271,40 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
     state: "",
     user: "",
     partition: "",
+    agentOnly: false,
   });
   const [sort, setSort] = useState({ col: null, asc: true });
   const showCost = cluster.features.ec2Cost;
   const showStates = cluster.features.jobStates;
+  const showAgents = cluster.features.agentDetection;
   const columns = jobColumnsFor(cluster);
 
   // With no state control rendered, a stale `state` must not linger in the filter set or the cache
   // key — it would filter invisibly and put a "Filtered" row on screen with nothing to explain it.
   const activeState = showStates ? localFilters.state : "";
 
+  // Same reasoning as `activeState`: on a cluster with no provenance columns the checkbox is not
+  // rendered, so a toggle left on from the Yen tab must not survive into the filter set or the cache
+  // key. `buildWhere` also guards, but dropping it here keeps "Filtered" off screen when there is no
+  // visible control to explain it.
+  const activeAgentOnly = showAgents ? Boolean(localFilters.agentOnly) : false;
+
   // `node` is a global filter owned by App; the rest are local to this tab. The summary strip
   // above already reflects `node`, so only the local filters justify a second "Filtered" row —
   // otherwise it would restate the same numbers.
-  const filters = { ...localFilters, state: activeState, node, group };
+  const filters = {
+    ...localFilters,
+    state: activeState,
+    agentOnly: activeAgentOnly,
+    node,
+    group,
+  };
   const hasFilters = Boolean(
-    activeState || localFilters.user || localFilters.partition,
+    activeState || localFilters.user || localFilters.partition || activeAgentOnly,
   );
-  const fk = `${activeState}_${localFilters.user}_${localFilters.partition}_${node || ""}_${group || ""}`;
+  const fk =
+    `${activeState}_${localFilters.user}_${localFilters.partition}_` +
+    `${node || ""}_${group || ""}_${activeAgentOnly ? "agent" : ""}`;
 
   const { data, loading, error } = useRedivisQuery(
     () => getJobs(cluster, startDate, endDate, filters),
@@ -349,6 +375,7 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
     filters.partition && `partition: ${filters.partition}`,
     node && `node: ${node}`,
     group && `group: ${group}`,
+    filters.agentOnly && "agent-submitted only",
   ].filter(Boolean);
   const filterSuffix = filterParts.length > 0 ? ` (${filterParts.join(", ")})` : "";
 
@@ -383,33 +410,6 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
 
   const timelineGran = timeline?.granularity || "day";
 
-  function parsePeriod(val) {
-    if (val == null) return null;
-    if (val instanceof Date) return val;
-    if (typeof val === "number") return new Date(val);
-    const s = String(val);
-    // Parsed as UTC, not local: these are whole dates, and reading them in a zone ahead of UTC
-    // would shift them a day and mislabel the period.
-    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(s + "T00:00:00Z");
-    return new Date(s);
-  }
-
-  function formatPeriodLabel(val) {
-    const d = parsePeriod(val);
-    if (!d || isNaN(d.getTime())) return String(val);
-    const utc = { timeZone: "UTC" };
-    const fmt = (dt) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric", ...utc });
-    if (timelineGran === "week") {
-      const end = new Date(d);
-      end.setDate(end.getDate() + 6);
-      return `${fmt(d)} – ${fmt(end)}`;
-    }
-    if (timelineGran === "month") {
-      return d.toLocaleDateString("en-US", { month: "short", year: "numeric", ...utc });
-    }
-    return fmt(d);
-  }
-
   function periodKey(val) {
     const d = parsePeriod(val);
     if (!d || isNaN(d.getTime())) return String(val);
@@ -431,7 +431,7 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
 
   const combinedData = keys.map((key) => ({
     date: key,
-    label: formatPeriodLabel(key),
+    label: formatPeriod(key, timelineGran),
     count: countByKey[key] ?? 0,
     avg: waitByDate[key]?.avg ?? null,
     median: waitByDate[key]?.median ?? null,
@@ -480,6 +480,24 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
   return (
     <div className="space-y-6">
       <div className="flex gap-3 items-center">
+        {showAgents && (
+          <label
+            className="flex items-center gap-2 text-sm border border-black-20 rounded px-3 py-1.5 bg-white cursor-pointer"
+            title={
+              "Only jobs whose WorkDir or SubmitLine contains an agent scratch or worktree path. " +
+              "Undercounts: an agent submitting a script from the project tree leaves no trace."
+            }
+          >
+            <input
+              type="checkbox"
+              checked={Boolean(localFilters.agentOnly)}
+              onChange={(e) =>
+                setLocalFilters({ ...localFilters, agentOnly: e.target.checked })
+              }
+            />
+            AI agent only
+          </label>
+        )}
         {showStates && (
           <select
             className="border border-black-20 rounded px-3 py-1.5 text-sm bg-white"
@@ -522,7 +540,9 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
         </select>
         {hasFilters && (
           <button
-            onClick={() => setLocalFilters({ state: "", user: "", partition: "" })}
+            onClick={() =>
+              setLocalFilters({ state: "", user: "", partition: "", agentOnly: false })
+            }
             className="text-sm text-black-60 hover:text-black-su px-2"
           >
             Clear

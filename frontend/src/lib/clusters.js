@@ -61,6 +61,10 @@ export const CLUSTERS = {
       end: "End",
       nodeList: "NodeList",
       group: null, // sacct dump carries no group/account column
+      // Submission provenance. `sacct --format=ALL` collects both and the exporter filters no
+      // columns, so they are present in the dump but were previously unmapped.
+      workDir: "WorkDir",
+      submitLine: "SubmitLine",
     },
 
     /**
@@ -100,6 +104,44 @@ export const CLUSTERS = {
       memory: true,
       gpus: true,
       groups: false,
+      agentDetection: true,
+    },
+
+    /**
+     * Which AI coding agent submitted a job, or NULL for one a person typed.
+     *
+     * Every marker is a path the agent itself creates, so a match means the sbatch/srun was issued
+     * from inside an agent session rather than by hand:
+     *
+     *   Claude Code  /tmp/claude-<uid>/<project>/<session-uuid>/scratchpad/...   session scratch
+     *                ~/.claude/jobs/<hash>/ , ~/.claude/worktrees/<branch>/      job + worktree dirs
+     *   Codex        ~/.codex/worktrees/<uuid>/ , /tmp/codex...                  worktree + scratch
+     *
+     * Measured over 60 days of this table: 409 jobs, 14 users — 387/13 Claude Code, 22/1 Codex.
+     *
+     * **Patterns are anchored on purpose.** A bare `claude` substring is unusable: a faculty project
+     * here keeps results under `.../structure/claude/...`, and matching it would label ordinary GMM
+     * econometrics as agent work. Requiring `/tmp/claude-` + digits, or a dotted `.claude/`, excludes
+     * it — verified, 0 of that project's jobs match. Same reasoning for `codex`, where a bare match
+     * would catch GPU reservations named `hold-a40-codex`.
+     *
+     * Gemini CLI is **not** covered: it has a module on this cluster but leaves no `.gemini/` path in
+     * any of 142,702 jobs. The only `gemini` hits are human-written job *names*, which is the trap
+     * below. Add a marker here if that changes.
+     *
+     * Job names are deliberately not a marker. One user prefixes theirs `claude_*`, which finds 425
+     * jobs but only that one user; the path markers find 409 across 14, overlapping by just 10. A
+     * naming convention measures who adopted the convention, not who used an agent.
+     *
+     * Undercounts by construction: an agent that submits a script living in the project tree, with
+     * no scratch path on the command line, leaves no trace. Treat this as a floor, not a census.
+     */
+    agentDetection: {
+      columns: ["workDir", "submitLine"],
+      agents: [
+        { label: "claude-code", pattern: "(/tmp/claude-[0-9]+/|[.]claude/)" },
+        { label: "codex", pattern: "(/tmp/codex|[.]codex/)" },
+      ],
     },
 
     /**
@@ -161,6 +203,10 @@ export const CLUSTERS = {
       // `NodeList` is the assigned-nodes column and is clean: 0 of 859,296 rows start with "(".
       // The parenthesised pending reasons live in the separate `NodeListReason` column.
       nodeList: "NodeList",
+      // A squeue snapshot has no submission-provenance columns, so agent detection is impossible
+      // here. Mapped to null so a shared code path emits no SQL against a column Sherlock lacks.
+      workDir: null,
+      submitLine: null,
       // The PI group, and the dimension GSB work is actually organised by on Sherlock.
       //
       // Verified: group is a function of user — 23 groups over 91 users, and no user has ever
@@ -200,10 +246,15 @@ export const CLUSTERS = {
      * observed. If the daily transform ever starts emitting true elapsed times, flip `ec2Cost`.
      *
      * No GPUs: the dump has no TRES/GRES column at all, so GPU counts are unknowable here.
+     *
+     * No agent detection: that reads submission provenance out of `WorkDir` / `SubmitLine`, and a
+     * squeue snapshot carries neither. This is a missing-column limit, not a policy one — if a
+     * future Sherlock dump adds them, map the columns and flip the flag.
      */
     features: {
       ec2Cost: false,
       nodeFilter: true,
+      agentDetection: false,
       // Only RUNNING / PENDING / COMPLETING / CONFIGURING are ever recorded, so a state breakdown
       // can only ever describe what the sampler happened to catch. Showing it invites comparisons
       // that cannot be made, so state is dropped from this cluster's UI outright.

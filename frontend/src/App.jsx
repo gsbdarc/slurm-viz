@@ -5,6 +5,7 @@ import JobsDashboard from "./components/JobsDashboard";
 import ClusterDashboard from "./components/ClusterDashboard";
 import UserDashboard from "./components/UserDashboard";
 import GroupDashboard from "./components/GroupDashboard";
+import AgentsDashboard from "./components/AgentsDashboard";
 import { useRedivisQuery } from "./hooks/useRedivisQuery";
 import { getFilterOptions, getSamplingStats, ck } from "./redivis/queries";
 import { CLUSTER_LIST, DEFAULT_CLUSTER, getCluster } from "./lib/clusters";
@@ -14,6 +15,7 @@ const TABS = [
   { id: "cluster", label: "Cluster" },
   { id: "users", label: "Users" },
   { id: "groups", label: "Groups", feature: "groups" },
+  { id: "agents", label: "Agents", feature: "agentDetection" },
 ];
 
 /** Tabs this cluster can populate — same feature-gating idiom as `jobColumnsFor`. */
@@ -449,6 +451,7 @@ export default function App() {
             {activeTab === "cluster" && <ClusterDashboard {...panelProps} />}
             {activeTab === "users" && <UserDashboard {...panelProps} />}
             {activeTab === "groups" && <GroupDashboard {...panelProps} />}
+            {activeTab === "agents" && <AgentsDashboard {...panelProps} />}
           </main>
         </>
       )}

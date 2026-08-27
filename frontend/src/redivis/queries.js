@@ -463,6 +463,40 @@ export function nodeMatchSql(col, node, rejectValuePattern) {
 }
 
 /** Rows where the job genuinely waited, i.e. where `Start` is a fact rather than a forecast. */
+/**
+ * Which agent submitted a job, as a STRING expression, or NULL when nothing matched.
+ *
+ * Reads submission provenance (`WorkDir`, `SubmitLine`) against the per-agent path patterns in
+ * `clusters.agentDetection`. Returns `null` for a cluster without the feature so callers can drop
+ * the column entirely rather than emit SQL against a table that lacks those columns — Sherlock's
+ * squeue dump has neither.
+ *
+ * Agents are tested in declaration order and the first match wins; the patterns are disjoint in
+ * practice, and a CASE keeps one job from being counted under two agents if that ever stops being
+ * true.
+ *
+ * Each source column is tested separately and OR'd, rather than concatenated and tested once: a
+ * CONCAT can manufacture a match that spans the join, where one column happens to end `/tmp/claude-`
+ * and the next begins with digits. Each is wrapped in IFNULL because `REGEXP_CONTAINS(NULL, ...)` is
+ * NULL rather than false, and a NULL disjunct would mask a real match on the other column.
+ */
+function agentSql(cluster) {
+  const cfg = cluster.agentDetection;
+  if (!cluster.features?.agentDetection || !cfg) return null;
+  const c = cols(cluster);
+  const sources = cfg.columns.map((k) => c[k]).filter(Boolean);
+  if (!sources.length) return null;
+  const whens = cfg.agents
+    .map((a) => {
+      const test = sources
+        .map((col) => `REGEXP_CONTAINS(IFNULL(${col}, ''), ${sqlRegex(a.pattern)})`)
+        .join(" OR ");
+      return `WHEN ${test} THEN ${sqlString(a.label)}`;
+    })
+    .join("\n              ");
+  return `CASE ${whens}\n              ELSE NULL END`;
+}
+
 function waitCondSql(cluster) {
   const c = cols(cluster);
   const parts = [`${c.start} IS NOT NULL`, `${c.start} > ${c.submit}`];
@@ -499,12 +533,25 @@ async function buildWhere(cluster, start, end, filters = {}, extra = []) {
   }
   // The `c.group` guard keeps a stale selection from emitting SQL against a column Yen lacks.
   if (group && c.group) conditions.push(`${c.group} = ${sqlString(group)}`);
+  // Same guard shape: `agentSql` returns null on a cluster without provenance columns, so a stale
+  // toggle carried over from the Yen tab emits nothing rather than failing against Sherlock.
+  if (filters.agentOnly) {
+    const agent = agentSql(cluster);
+    if (agent) conditions.push(`(${agent}) IS NOT NULL`);
+  }
   return conditions.join(" AND ");
 }
 
 /** Stable cache-key fragment for a filter set. */
 function filterKey(filters = {}) {
-  return [filters.state, filters.user, filters.partition, filters.node, filters.group]
+  return [
+    filters.state,
+    filters.user,
+    filters.partition,
+    filters.node,
+    filters.group,
+    filters.agentOnly ? "agent" : "",
+  ]
     .map((v) => v || "")
     .join("|");
 }
@@ -686,6 +733,11 @@ export async function getJobs(cluster, start, end, filters = {}) {
     ? `, SUM(${frag.ec2Cost}) AS total_ec2_cost_usd`
     : "";
 
+  // Null on clusters without provenance columns, in which case the column is omitted from the
+  // SELECT entirely and the dashboard's `agent` guard hides the UI.
+  const agent = agentSql(cluster);
+  const agentSelect = agent ? `${agent} AS \`Agent\`,` : "";
+
   const [countRows, rows] = await Promise.all([
     runQuery(
       cluster,
@@ -708,6 +760,7 @@ export async function getJobs(cluster, start, end, filters = {}) {
               ${c.start} AS \`Start\`,
               ${c.end || "CAST(NULL AS STRING)"} AS \`End\`,
               ${c.nodeList} AS \`NodeList\`,
+              ${agentSelect}
               \`_mem_gb\` AS ReqMem_GB,
               \`_gpu_count\` AS gpu_count,
               ${waitSecondsSql(cluster)} AS wait_seconds
@@ -903,6 +956,94 @@ export async function getWaitTimes(cluster, start, end, filters = {}) {
   );
 
   return { granularity: gran, data: rows };
+}
+
+/**
+ * One row per agent: job count, distinct users, CPU hours, and first/last submission.
+ *
+ * Jobs with no agent marker are grouped under a NULL agent and returned alongside the rest, so the
+ * dashboard can show agent work as a *share* of the range rather than an unanchored count. Callers
+ * split the NULL row out; keeping it in one query keeps the two numbers consistent.
+ */
+export async function getAgentSummaries(cluster, start, end, filters = {}) {
+  const c = cols(cluster);
+  const agent = agentSql(cluster);
+  if (!agent) return [];
+  const [where, frag] = await Promise.all([
+    buildWhere(cluster, start, end, filters),
+    sqlFragments(cluster),
+  ]);
+  const cost = frag.ec2Cost ? `, SUM(${frag.ec2Cost}) AS ec2_cost_usd` : "";
+
+  return runQuery(
+    cluster,
+    `WITH ${frag.cte}
+     SELECT ${agent} AS agent,
+            COUNT(*) AS job_count,
+            COUNT(DISTINCT ${c.user}) AS unique_users,
+            SUM(${c.ncpus} * ${cluster.elapsedSecondsSql}) / 3600.0 AS cpu_hours,
+            MIN(${c.submit}) AS first_submit,
+            MAX(${c.submit}) AS last_submit${cost}
+     FROM jobs WHERE ${where}
+     GROUP BY agent ORDER BY job_count DESC`,
+    ck(cluster, "agent_summaries", start, end, filterKey(filters)),
+  );
+}
+
+/**
+ * Agent jobs and distinct agent users per period — the trend series.
+ *
+ * Only rows with an agent are returned; a NULL-agent bucket would dwarf every agent series on the
+ * same axis and make the trend unreadable. The share-of-total figure comes from
+ * `getAgentSummaries`, which does keep the NULL row.
+ */
+export async function getAgentsByPeriod(cluster, start, end, filters = {}) {
+  const c = cols(cluster);
+  const agent = agentSql(cluster);
+  if (!agent) return { granularity: "month", data: [] };
+  const where = await buildWhere(cluster, start, end, filters);
+  const [gran, expr] = granularity(cluster, start, end);
+
+  const rows = await runQuery(
+    cluster,
+    `WITH ${plainCte(cluster)}
+     SELECT ${expr} AS period,
+            ${agent} AS agent,
+            COUNT(*) AS job_count,
+            COUNT(DISTINCT ${c.user}) AS unique_users
+     FROM jobs
+     WHERE ${where} AND (${agent}) IS NOT NULL
+     GROUP BY period, agent ORDER BY period`,
+    ck(cluster, "agents_period", start, end, filterKey(filters)),
+  );
+
+  return { granularity: gran, data: rows };
+}
+
+/**
+ * Per-user agent usage: which agents a user submits with, and how much.
+ *
+ * Restricted to agent-submitted jobs — a user's non-agent work is already the Users tab's job.
+ */
+export async function getAgentUsers(cluster, start, end, filters = {}) {
+  const c = cols(cluster);
+  const agent = agentSql(cluster);
+  if (!agent) return [];
+  const where = await buildWhere(cluster, start, end, filters);
+
+  return runQuery(
+    cluster,
+    `WITH ${plainCte(cluster)}
+     SELECT ${c.user} AS \`User\`,
+            ${agent} AS agent,
+            COUNT(*) AS job_count,
+            SUM(${c.ncpus} * ${cluster.elapsedSecondsSql}) / 3600.0 AS cpu_hours,
+            MAX(${c.submit}) AS last_submit
+     FROM jobs
+     WHERE ${where} AND (${agent}) IS NOT NULL
+     GROUP BY \`User\`, agent ORDER BY job_count DESC`,
+    ck(cluster, "agent_users", start, end, filterKey(filters)),
+  );
 }
 
 export async function getUsersByPeriod(cluster, start, end, filters = {}) {
