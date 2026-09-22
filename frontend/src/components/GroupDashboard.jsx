@@ -12,6 +12,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import ChartFigure, { fmtCount, topList, peak, total } from "./ChartFigure";
 
 const GROUP_COLUMNS = [
   { key: "Group", label: "Group" },
@@ -134,7 +135,7 @@ export default function GroupDashboard({ cluster, startDate, endDate, node, grou
 
   if (loading && !groupsData)
     return <LoadingProgress completed={0} total={1} label="Loading groups" details={details} />;
-  if (error) return <div className="text-spirited p-4">Error: {error}</div>;
+  if (error) return <div className="text-digital-red p-4">Error: {error}</div>;
 
   const rows = groupsData || [];
 
@@ -174,7 +175,7 @@ export default function GroupDashboard({ cluster, startDate, endDate, node, grou
         {partition && (
           <button
             onClick={() => setPartition("")}
-            className="text-sm text-black-60 hover:text-black-su px-2"
+            className="text-sm text-cool-grey hover:text-black-su px-2"
           >
             Clear
           </button>
@@ -182,7 +183,7 @@ export default function GroupDashboard({ cluster, startDate, endDate, node, grou
       </div>
 
       {unnamed && (
-        <div className="text-xs text-black-60 leading-snug">
+        <div className="text-xs text-cool-grey leading-snug">
           {unnamed.job_count?.toLocaleString()} job
           {unnamed.job_count === 1 ? "" : "s"} in this range have no group recorded and are excluded
           from the charts below — the collector did not capture a group before December 2025
@@ -196,15 +197,17 @@ export default function GroupDashboard({ cluster, startDate, endDate, node, grou
             <h3 className="text-lg font-semibold text-black-su mb-3">
               Top Groups by CPU Hours{suffix}
             </h3>
-            <ResponsiveContainer width="100%" height={400}>
-              <BarChart data={topByCpuHours} layout="vertical" margin={{ left: 10 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis type="number" />
-                <YAxis dataKey="Group" type="category" width={120} tick={{ fontSize: 13 }} />
-                <Tooltip formatter={(v) => (typeof v === "number" ? v.toFixed(1) : v)} />
-                <Bar isAnimationActive={false} dataKey="cpu_hours" fill="#B1040E" name="CPU Hours" />
-              </BarChart>
-            </ResponsiveContainer>
+            <ChartFigure summary={`Top groups by CPU hours: ${topList(topByCpuHours, "Group", "cpu_hours", (v) => `${fmtCount(v)} CPU-hours`)}.`}>
+              <ResponsiveContainer width="100%" height={400}>
+                <BarChart data={topByCpuHours} layout="vertical" margin={{ left: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis type="number" />
+                  <YAxis dataKey="Group" type="category" width={120} tick={{ fontSize: 13 }} />
+                  <Tooltip formatter={(v) => (typeof v === "number" ? v.toFixed(1) : v)} />
+                  <Bar isAnimationActive={false} dataKey="cpu_hours" fill="#B1040E" name="CPU Hours" />
+                </BarChart>
+              </ResponsiveContainer>
+            </ChartFigure>
           </div>
         )}
 
@@ -213,15 +216,17 @@ export default function GroupDashboard({ cluster, startDate, endDate, node, grou
             <h3 className="text-lg font-semibold text-black-su mb-3">
               Top Groups by Job Count{suffix}
             </h3>
-            <ResponsiveContainer width="100%" height={400}>
-              <BarChart data={topByJobCount} layout="vertical" margin={{ left: 10 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis type="number" />
-                <YAxis dataKey="Group" type="category" width={120} tick={{ fontSize: 13 }} />
-                <Tooltip formatter={(v) => (typeof v === "number" ? v.toLocaleString() : v)} />
-                <Bar isAnimationActive={false} dataKey="job_count" fill="#008566" name="Jobs" />
-              </BarChart>
-            </ResponsiveContainer>
+            <ChartFigure summary={`Top groups by job count: ${topList(topByJobCount, "Group", "job_count", (v) => `${fmtCount(v)} jobs`)}.`}>
+              <ResponsiveContainer width="100%" height={400}>
+                <BarChart data={topByJobCount} layout="vertical" margin={{ left: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis type="number" />
+                  <YAxis dataKey="Group" type="category" width={120} tick={{ fontSize: 13 }} />
+                  <Tooltip formatter={(v) => (typeof v === "number" ? v.toLocaleString() : v)} />
+                  <Bar isAnimationActive={false} dataKey="job_count" fill="#008566" name="Jobs" />
+                </BarChart>
+              </ResponsiveContainer>
+            </ChartFigure>
           </div>
         )}
       </div>

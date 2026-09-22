@@ -14,7 +14,7 @@ export default function SummaryCards({ cluster, startDate, endDate, node, group 
   );
 
   if (loading) return <LoadingProgress completed={0} total={1} label="Loading summary" details={[]} />;
-  if (error) return <div className="text-spirited p-4">Error: {error}</div>;
+  if (error) return <div className="text-digital-red p-4">Error: {error}</div>;
 
   const cards = [
     { label: "Total Jobs", value: data.total_jobs?.toLocaleString() },
@@ -45,12 +45,12 @@ export default function SummaryCards({ cluster, startDate, endDate, node, group 
             className="bg-white rounded-lg shadow border border-black-20 p-3 text-center"
           >
             <div className="text-xl font-bold text-black-su">{c.value}</div>
-            <div className="text-xs text-black-60 mt-1">{c.label}</div>
+            <div className="text-xs text-cool-grey mt-1">{c.label}</div>
           </div>
         ))}
       </div>
       {(showCost || node) && (
-        <details className="mt-2 text-xs text-black-60">
+        <details className="mt-2 text-xs text-cool-grey">
           <summary className="cursor-pointer select-none hover:text-black-su w-fit">
             {showCost ? "How the EC2 equivalent is estimated" : "About the node filter"}
           </summary>
