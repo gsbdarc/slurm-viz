@@ -22,7 +22,7 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts";
-import ChartFigure, { fmtCount, topList, peak, total } from "./ChartFigure";
+import ChartFigure, { fmtCount, topList, peak, sumOf } from "./ChartFigure";
 
 /** Stable per-agent colour, so a series keeps its colour across all three charts. */
 const AGENT_COLORS = {
@@ -285,7 +285,7 @@ export default function AgentsDashboard({ cluster, startDate, endDate, node, gro
               <h3 className="font-semibold text-black-su mb-3">
                 Agent jobs per {periodLabel(gran).toLowerCase()}
               </h3>
-              <ChartFigure summary={`Agent-submitted jobs per ${periodLabel(gran).toLowerCase()}: ${agentNames.map((a) => `${a} ${fmtCount(total(periodData, (r) => r[a]))}`).join(", ") || "none"} in total${(() => { const p = peak(periodData, "period", (r) => agentNames.reduce((s, a) => s + (r[a] || 0), 0)); return p ? `; busiest ${p.at} with ${fmtCount(p.value)}` : ""; })()}.`}>
+              <ChartFigure summary={`Agent-submitted jobs per ${periodLabel(gran).toLowerCase()}: ${agentNames.map((a) => `${a} ${fmtCount(sumOf(periodData, (r) => r[a]))}`).join(", ") || "none"} in total${(() => { const p = peak(periodData, "period", (r) => agentNames.reduce((s, a) => s + (r[a] || 0), 0)); return p ? `; busiest ${p.at} with ${fmtCount(p.value)}` : ""; })()}.`}>
                 <ResponsiveContainer width="100%" height={280}>
                   <BarChart data={periodData}>
                     <CartesianGrid strokeDasharray="3 3" />

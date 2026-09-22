@@ -44,6 +44,6 @@ export function peak(rows, xKey, valueOf) {
   return best;
 }
 
-export function total(rows, valueOf) {
+export function sumOf(rows, valueOf) {
   return (rows || []).reduce((s, r) => s + num(valueOf(r)), 0);
 }

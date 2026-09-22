@@ -12,7 +12,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import ChartFigure, { fmtCount, topList, peak, total } from "./ChartFigure";
+import ChartFigure, { fmtCount, topList, peak, sumOf } from "./ChartFigure";
 
 const GROUP_COLUMNS = [
   { key: "Group", label: "Group" },
