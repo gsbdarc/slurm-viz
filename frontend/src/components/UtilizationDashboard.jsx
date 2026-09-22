@@ -12,7 +12,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import ChartFigure, { fmtCount, topList, peak, total } from "./ChartFigure";
+import ChartFigure, { fmtCount, topList, peak, sumOf } from "./ChartFigure";
 
 /**
  * One hue for every histogram: each is a single series of counts, so there is no identity to

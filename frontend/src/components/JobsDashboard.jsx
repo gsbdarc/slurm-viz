@@ -17,7 +17,7 @@ import {
   Line,
   Legend,
 } from "recharts";
-import ChartFigure, { fmtCount, topList, peak, total } from "./ChartFigure";
+import ChartFigure, { fmtCount, topList, peak, sumOf } from "./ChartFigure";
 
 function MiniCards({ data, label, showCost, showStates }) {
   if (!data) return null;
@@ -450,7 +450,7 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
           <h3 className="text-lg font-semibold text-black-su mb-3">
             Job Submissions &amp; Queue Wait Time{filterSuffix}
           </h3>
-          <ChartFigure summary={`Jobs submitted per ${timelineGran}: ${fmtCount(total(combinedData, (r) => r.count))} in total${(() => { const p = peak(combinedData, "label", (r) => r.count); return p ? `, peaking at ${fmtCount(p.value)} in ${p.at}` : ""; })()}${(() => { const m = peak(combinedData, "label", (r) => r.median); return m ? `. Median queue wait peaked at ${fmtWait(m.value)} in ${m.at}` : ""; })()}.`}>
+          <ChartFigure summary={`Jobs submitted per ${timelineGran}: ${fmtCount(sumOf(combinedData, (r) => r.count))} in total${(() => { const p = peak(combinedData, "label", (r) => r.count); return p ? `, peaking at ${fmtCount(p.value)} in ${p.at}` : ""; })()}${(() => { const m = peak(combinedData, "label", (r) => r.median); return m ? `. Median queue wait peaked at ${fmtWait(m.value)} in ${m.at}` : ""; })()}.`}>
             <ResponsiveContainer width="100%" height={350}>
               <ComposedChart data={combinedData}>
                 <CartesianGrid strokeDasharray="3 3" />

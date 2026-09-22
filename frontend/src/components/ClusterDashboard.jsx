@@ -15,7 +15,7 @@ import {
   Cell,
   LabelList,
 } from "recharts";
-import ChartFigure, { fmtCount, topList, peak, total } from "./ChartFigure";
+import ChartFigure, { fmtCount, topList, peak, sumOf } from "./ChartFigure";
 
 const COLORS = [
   "#8C1515",
@@ -131,7 +131,7 @@ export default function ClusterDashboard({ cluster, startDate, endDate, node, gr
         {showPartitionCharts && (
           <div className="bg-white rounded-lg shadow border border-black-20 p-4">
             <h3 className="text-lg font-semibold text-black-su mb-3">Jobs by Partition</h3>
-            <ChartFigure summary={`Jobs by partition: ${topList(partitionData, "name", "value", (v) => `${fmtCount(v)} jobs, ${Math.round((100 * v) / (total(partitionData, (r) => r.value) || 1))}%`, 4)}.`}>
+            <ChartFigure summary={`Jobs by partition: ${topList(partitionData, "name", "value", (v) => `${fmtCount(v)} jobs, ${Math.round((100 * v) / (sumOf(partitionData, (r) => r.value) || 1))}%`, 4)}.`}>
               <ResponsiveContainer width="100%" height={300}>
                 <PieChart>
                   <Pie
