@@ -6,6 +6,7 @@ import ClusterDashboard from "./components/ClusterDashboard";
 import UserDashboard from "./components/UserDashboard";
 import GroupDashboard from "./components/GroupDashboard";
 import AgentsDashboard from "./components/AgentsDashboard";
+import UtilizationDashboard from "./components/UtilizationDashboard";
 import { useRedivisQuery } from "./hooks/useRedivisQuery";
 import { getFilterOptions, getSamplingStats, ck } from "./redivis/queries";
 import { CLUSTER_LIST, DEFAULT_CLUSTER, getCluster } from "./lib/clusters";
@@ -13,6 +14,7 @@ import { CLUSTER_LIST, DEFAULT_CLUSTER, getCluster } from "./lib/clusters";
 const TABS = [
   { id: "jobs", label: "Jobs" },
   { id: "cluster", label: "Cluster" },
+  { id: "utilization", label: "Utilization", feature: "usage" },
   { id: "users", label: "Users" },
   { id: "groups", label: "Groups", feature: "groups" },
   { id: "agents", label: "Agents", feature: "agentDetection" },
@@ -64,7 +66,7 @@ function AuthButton({ authed, onAuthChange }) {
   if (authed) {
     return (
       <div className="flex items-center gap-2">
-        <span className="text-sm text-digital-green-light font-medium">
+        <span className="text-sm text-palo-verde-light font-medium">
           Authenticated
         </span>
         <button
@@ -88,7 +90,7 @@ function AuthButton({ authed, onAuthChange }) {
   return (
     <button
       onClick={handleLogin}
-      className="px-3 py-1.5 rounded-md text-sm font-medium bg-poppy text-white hover:bg-poppy-light"
+      className="px-3 py-1.5 rounded-md text-sm font-medium bg-cardinal-red text-white hover:bg-cardinal-red-dark"
     >
       Authenticate with Redivis
     </button>
@@ -130,7 +132,7 @@ function DateRangePicker({ startDate, endDate, onChange }) {
           }}
           className="border border-black-20 rounded px-2 py-1"
         />
-        <span className="text-black-60">to</span>
+        <span className="text-cool-grey">to</span>
         <input
           type="date"
           value={endDate}
@@ -196,14 +198,14 @@ function NodePicker({ nodes, node, onChange, loading, truncated }) {
         ))}
       </datalist>
       {truncated && (
-        <span className="text-xs text-black-60 max-w-56 leading-tight">
+        <span className="text-xs text-cool-grey max-w-56 leading-tight">
           Showing the {nodes.length.toLocaleString()} busiest nodes — you can type any node name.
         </span>
       )}
       {node && (
         <button
           onClick={() => onChange("")}
-          className="text-sm text-black-60 hover:text-black-su px-2"
+          className="text-sm text-cool-grey hover:text-black-su px-2"
         >
           Clear
         </button>
@@ -238,7 +240,7 @@ function GroupPicker({ groups, group, onChange }) {
       {group && (
         <button
           onClick={() => onChange("")}
-          className="text-sm text-black-60 hover:text-black-su px-2"
+          className="text-sm text-cool-grey hover:text-black-su px-2"
         >
           Clear
         </button>
@@ -389,7 +391,7 @@ export default function App() {
           <h2 className="text-2xl font-semibold text-black-su mb-3">
             Sign in to view cluster statistics
           </h2>
-          <p className="text-black-60 mb-6">
+          <p className="text-cool-grey mb-6">
             Authenticate with your Redivis account to access Slurm job data.
           </p>
           <AuthButton authed={false} onAuthChange={setAuthed} />
@@ -449,6 +451,7 @@ export default function App() {
             <SummaryCards {...panelProps} />
             {activeTab === "jobs" && <JobsDashboard {...panelProps} />}
             {activeTab === "cluster" && <ClusterDashboard {...panelProps} />}
+            {activeTab === "utilization" && <UtilizationDashboard {...panelProps} />}
             {activeTab === "users" && <UserDashboard {...panelProps} />}
             {activeTab === "groups" && <GroupDashboard {...panelProps} />}
             {activeTab === "agents" && <AgentsDashboard {...panelProps} />}
