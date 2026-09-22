@@ -58,13 +58,22 @@ Open http://localhost:5173 in your browser.
 
 ## Deployment
 
-Build and deploy to GitHub Pages:
+Test, build, and deploy to GitHub Pages:
 
 ```bash
 cd frontend
+npm run smoke
 npm run build
 npx gh-pages -d dist
 ```
+
+**Don't skip `npm run smoke`.** A clean build only proves the code compiles; it never runs a
+page. The smoke test renders every tab on both clusters with made-up data, no Redivis login needed,
+and exits non-zero if any of them crashes. It exists because on 2026-09-22 a clean build took the
+live site down until #12. If it fails, don't deploy.
+
+It checks that pages *render*, not that their numbers are right. When you add a tab or a query,
+add it to `smoke/render.jsx` or `smoke/mock-query.js`; the test fails on a query it has no data for.
 
 ## Data sources
 
