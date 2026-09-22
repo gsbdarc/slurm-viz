@@ -214,8 +214,9 @@ export const CLUSTERS = {
        * both. Job 629511_2: 274% CPU on its 247s RESIZING record, 0% on the 1,222s COMPLETED one,
        * 46% over the whole job, and a 23 GiB peak on both under an enforced 12G limit. No per-row
        * figure is right, so usage is blanked on every record of a resized job: 95 jobs, 5 users,
-       * since 2026-07-05. Merging each chain into one job would fix the double count too — tracked
-       * separately.
+       * since 2026-07-05. Each such job still counts as two jobs everywhere else; merging each chain
+       * into one (summing elapsed and CPU time, taking the larger MaxRSS) would fix that too, but
+       * touches the dedup every tab relies on, for 95 of 1.26M jobs, so it has not been done.
        *
        * `withinDays` stops a pre-reset job that reused the same JobID from matching: the eras are
        * a year apart, and no job runs past the 7-day `long` partition limit.
