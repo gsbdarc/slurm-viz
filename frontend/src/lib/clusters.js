@@ -36,6 +36,27 @@ function slurmDurationToSeconds(col) {
 
 const SHERLOCK_ELAPSED = slurmDurationToSeconds("`TimeUsed`");
 
+/**
+ * sacct CPU-time strings (`TotalCPU`): `MM:SS.mmm` under an hour, `[D-]HH:MM:SS` above it. Unlike
+ * `slurmDurationToSeconds`, the seconds field may carry a fractional part, and a short job's value
+ * is *only* `MM:SS.mmm` — the parser above would read every one of those as 0.
+ */
+function slurmCpuTimeToSeconds(col) {
+  return `(IFNULL(SAFE_CAST(REGEXP_EXTRACT(${col}, r'^(\\d+)-') AS INT64), 0) * 86400
+ + CASE
+     WHEN REGEXP_CONTAINS(${col}, r'^(?:\\d+-)?\\d+:\\d{2}:\\d{2}(?:\\.\\d+)?$')
+       THEN SAFE_CAST(REGEXP_EXTRACT(${col}, r'(\\d+):\\d{2}:\\d{2}(?:\\.\\d+)?$') AS INT64) * 3600
+          + SAFE_CAST(REGEXP_EXTRACT(${col}, r'(\\d{2}):\\d{2}(?:\\.\\d+)?$')      AS INT64) * 60
+          + SAFE_CAST(REGEXP_EXTRACT(${col}, r'(\\d{2}(?:\\.\\d+)?)$')             AS FLOAT64)
+     WHEN REGEXP_CONTAINS(${col}, r'^\\d+:\\d{2}(?:\\.\\d+)?$')
+       THEN SAFE_CAST(REGEXP_EXTRACT(${col}, r'^(\\d+):') AS INT64) * 60
+          + SAFE_CAST(REGEXP_EXTRACT(${col}, r'(\\d{2}(?:\\.\\d+)?)$') AS FLOAT64)
+     ELSE NULL
+   END)`;
+}
+
+const YEN_CPU_SECONDS = slurmCpuTimeToSeconds("`TotalCPU`");
+
 export const CLUSTERS = {
   yen: {
     id: "yen",
@@ -60,9 +81,10 @@ export const CLUSTERS = {
       start: "Start",
       end: "End",
       nodeList: "NodeList",
-      group: null, // sacct dump carries no group/account column
-      // Submission provenance. `sacct --format=ALL` collects both and the exporter filters no
-      // columns, so they are present in the dump but were previously unmapped.
+      // The dump now carries `Account` and `Group`, but both are constant on the Yens (`none` and
+      // `operator` for every row, per #10), so neither is a usable grouping.
+      group: null,
+      // Submission provenance. `sacct --format=ALL` collects both, and the exporter keeps them.
       workDir: "WorkDir",
       submitLine: "SubmitLine",
     },
@@ -83,6 +105,27 @@ export const CLUSTERS = {
      * still running, and `TO_JSON_STRING` is a final deterministic key so byte-identical duplicates
      * can't reorder either.
      *
+     * The usage keys come after every field the rest of the dashboard reads, so they only break ties
+     * — but those ties are common since the #10 rebuild, which folds usage onto the job row: a job's
+     * snapshots can agree on every timing field yet disagree on usage.
+     *
+     *   `MaxRSSBytes IS NULL`   Left to `TO_JSON_STRING`, 21k jobs landed on a usage-less row.
+     *   CPU time, then MaxRSS,  Not the newest snapshot: a later pull can miss a step that finished
+     *   both DESC              before its `-S` window, and the fold then totals only the steps it
+     *                          saw. Job 562136_1's Sep 7 snapshot is short exactly its step 0's
+     *                          26:21, against live sacct. Dropping a step can only lower the totals,
+     *                          so the larger snapshot is the complete one. Newest-first
+     *                          under-reported CPU for 89 jobs and memory for 52.
+     *
+     * Verified 2026-09-22 across all 1,257,975 jobs: all 603,151 jobs with usage on any row get it,
+     * every one at its maximum CPU time and all but one at its maximum MaxRSS (that job's two
+     * snapshots each miss a different step), and no job's elapsed, end, state, CPUs, memory or TRES
+     * changed. Spot-checked 17 jobs against `sacct` on yen5: memory exact on all, CPU exact on all.
+     *
+     * Not `WHERE SnapshotKind = 'daily'`, as the exporter's docs suggest for usage work: the
+     * `1-year-snapshot` rows are the only copy of Aug 2024–Aug 2025 (552 of 427,227 also appear in
+     * daily rows), so that filter would delete the first year from every tab.
+     *
      * Known edge: 154 JobIDs have rows whose `Submit` differs (by up to 39 days) — most likely
      * requeues. These are kept as separate jobs rather than collapsed.
      */
@@ -90,10 +133,25 @@ export const CLUSTERS = {
       partition: "`JobID`, `Submit`",
       order:
         "`End` DESC NULLS LAST, `ElapsedRaw` DESC NULLS LAST, " +
-        "`Start` DESC NULLS LAST, TO_JSON_STRING(t)",
+        "`Start` DESC NULLS LAST, `MaxRSSBytes` IS NULL, " +
+        `${YEN_CPU_SECONDS} DESC NULLS LAST, \`MaxRSSBytes\` DESC, ` +
+        "`SnapshotDate` DESC NULLS LAST, TO_JSON_STRING(t)",
     },
 
     elapsedSecondsSql: "`ElapsedRaw`",
+
+    /**
+     * Column corrections applied inside the dedup CTE, replacing the raw value in place.
+     *
+     * `User`: two accounts were recorded with a stray trailing `@` (`mborrero@`, `mchyip@`) on 87
+     * rows submitted 2025-08-12 – 2025-11-27, in both daily and snapshot pulls. Each shares its UID
+     * with the clean name (`getent passwd 432571` → mborrero), so they are one person split across
+     * two dropdown entries and two sets of per-user totals. Live sacct cannot show the originals —
+     * they predate the January slurmdbd wipe — so the cause is unknown; a transient name-lookup
+     * glitch on the cluster fits the window. Stripping the `@` merges them; no clean username
+     * contains one.
+     */
+    cleanColumns: { User: "RTRIM(`User`, '@')" },
 
     /** sacct records a job's real end state, so every panel means what it says. */
     features: {
@@ -105,6 +163,83 @@ export const CLUSTERS = {
       gpus: true,
       groups: false,
       agentDetection: true,
+      usage: true,
+    },
+
+    /**
+     * What a job actually consumed, as opposed to what it asked for (#10). The exporter folds every
+     * step's usage onto the job row, taking the peak across steps — `.batch` alone under-reports any
+     * job that `srun`s its real work.
+     *
+     * NULL is not zero. Usage exists only for jobs submitted on or after `since`: slurmdbd was wiped
+     * at the 2026-01-21 upgrade, so older rows can never be backfilled. Running and never-started
+     * jobs are NULL too.
+     *
+     * Memory is measured against `ReqMemBytes`, the request as typed — which agrees exactly with the
+     * `ReqMem` parse behind the Memory (GB) column (0 mismatches over 677,521 rows), so the % reads
+     * against the number beside it. `AllocMemBytes` would be the enforced limit; ~4k jobs peak above
+     * their request but only ~10 above their allocation, because Slurm rounds the allocation up to a
+     * per-core minimum. So a Mem Used over 100% is real, not a bug.
+     *
+     * `presentSql` is the one test for "this row has usage", and CPU must be gated on it too:
+     * `TotalCPU` is not NULL on rows without usage but `00:00:00` — on all 471,842 completed pre-
+     * 2026 jobs, among others — so testing it directly would report 0% CPU for all of history.
+     * Where usage is present, a zero `TotalCPU` is rare (102 of 536,161 completed) and genuine.
+     */
+    usage: {
+      presentSql: "`MaxRSSBytes` IS NOT NULL",
+      since: "2026-01-22",
+      memUsedBytesSql: "`MaxRSSBytes`",
+      memReqBytesSql: "`ReqMemBytes`",
+      cpuSecondsSql: YEN_CPU_SECONDS,
+
+      /**
+       * GPU figures come from Slurm's NVML sampling (`gres/gpuutil`, `gres/gpumem`), every
+       * `JobAcctGatherFrequency` = 30s. Both are **peaks, not averages**: `TRESUsageInTot` equalled
+       * `TRESUsageInMax` on all 858 GPU steps checked on 2026-09-22, so `GPUUtil` is the busiest
+       * 30s sample and `GPUMemBytes` the most GPU memory held. Both are summed over the job's GPUs,
+       * hence the division by GPU count downstream. Slurm records no time-averaged utilization.
+       *
+       * `gpuMinSeconds`: a job shorter than one sampling interval is never sampled and reads 0 —
+       * 3,317 of 3,320 sub-30s GPU jobs — so below it the columns are blank, not 0%.
+       *
+       * `gpuModels`: the GPU memory each node gives a job, from its `GPU_MEMORY` feature
+       * (`sinfo -N -p gpu -o "%N %f"`). No job's peak exceeds its node's figure (checked per node,
+       * Jan 22 – Sep 21). A job spanning two models has no single denominator and is left blank.
+       */
+      /**
+       * A resized job is split by Slurm into two records under one JobID — the pre-resize one
+       * closed as RESIZING, a new one opened with a new `Submit` — so it dedups to two rows. Every
+       * step, and so all the CPU time, hangs off the first; the fold copies the same MaxRSS onto
+       * both. Job 629511_2: 274% CPU on its 247s RESIZING record, 0% on the 1,222s COMPLETED one,
+       * 46% over the whole job, and a 23 GiB peak on both under an enforced 12G limit. No per-row
+       * figure is right, so usage is blanked on every record of a resized job: 95 jobs, 5 users,
+       * since 2026-07-05. Merging each chain into one job would fix the double count too — tracked
+       * separately.
+       *
+       * `withinDays` stops a pre-reset job that reused the same JobID from matching: the eras are
+       * a year apart, and no job runs past the 7-day `long` partition limit.
+       */
+      resized: { state: "RESIZING", withinDays: 7 },
+
+      /**
+       * CPU % above this is blanked. A cancelled job's recorded elapsed stops at the cancel, but its
+       * steps keep burning CPU until their processes die — seconds, normally (922 of 931 cancelled
+       * jobs in a week, none by over 60s), which is enough to push a sub-minute job past 100%. Rare
+       * stragglers go further: 51587_204 was cancelled at 103s while its batch step ran to 794s,
+       * reading 538%. 585 jobs Jan 22 – Sep 21, 531 of them cancelled. The 5% of headroom keeps
+       * ordinary accounting jitter visible rather than hiding it.
+       */
+      cpuMaxPct: 105,
+
+      gpuUtilSql: "`GPUUtil`",
+      gpuMemBytesSql: "`GPUMemBytes`",
+      gpuMinSeconds: 30,
+      gpuModels: [
+        { model: "A30", memGiB: 24, nodes: ["yen-gpu1"] },
+        { model: "A40", memGiB: 48, nodes: ["yen-gpu2", "yen-gpu3"] },
+        { model: "H200", memGiB: 141, nodes: ["yen-gpu4"] },
+      ],
     },
 
     /**
@@ -263,6 +398,8 @@ export const CLUSTERS = {
       memory: true,
       gpus: false,
       groups: true,
+      // squeue reports what a job holds, never what it consumed.
+      usage: false,
     },
 
     /**
