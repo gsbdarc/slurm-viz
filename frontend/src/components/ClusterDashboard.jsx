@@ -15,15 +15,16 @@ import {
   Cell,
   LabelList,
 } from "recharts";
+import ChartFigure, { fmtCount, topList, peak, total } from "./ChartFigure";
 
 const COLORS = [
   "#8C1515",
   "#175E54",
   "#006CB8",
-  "#E98300",
+  "#B36700",
   "#007C92",
   "#620059",
-  "#E04F39",
+  "#E94C0A",
   "#279989",
 ];
 
@@ -60,7 +61,7 @@ export default function ClusterDashboard({ cluster, startDate, endDate, node, gr
 
   if (loading)
     return <LoadingProgress completed={0} total={1} label="Loading cluster" details={details} />;
-  if (error) return <div className="text-spirited p-4">Error: {error}</div>;
+  if (error) return <div className="text-digital-red p-4">Error: {error}</div>;
 
   const allPartitions = data.partitions
     ? Object.entries(data.partitions).map(([name, value]) => ({ name, value }))
@@ -103,10 +104,10 @@ export default function ClusterDashboard({ cluster, startDate, endDate, node, gr
         <div className="bg-white rounded-lg shadow border border-black-20 p-4">
           {node ? (
             <>
-              <span className="text-black-60">Filtered to node </span>
+              <span className="text-cool-grey">Filtered to node </span>
               <span className="font-bold text-xl text-black-su">{node}</span>
               {alsoTouched > 0 && (
-                <span className="text-black-60">
+                <span className="text-cool-grey">
                   {" "}
                   — some of these jobs also spanned {alsoTouched} other{" "}
                   {alsoTouched === 1 ? "node" : "nodes"}
@@ -115,7 +116,7 @@ export default function ClusterDashboard({ cluster, startDate, endDate, node, gr
             </>
           ) : (
             <>
-              <span className="text-black-60">Unique nodes used: </span>
+              <span className="text-cool-grey">Unique nodes used: </span>
               <span className="font-bold text-xl text-black-su">
                 {/* The count comes from the node index, so a capped index makes it a floor. */}
                 {data.nodes_truncated ? "≥ " : ""}
@@ -130,27 +131,29 @@ export default function ClusterDashboard({ cluster, startDate, endDate, node, gr
         {showPartitionCharts && (
           <div className="bg-white rounded-lg shadow border border-black-20 p-4">
             <h3 className="text-lg font-semibold text-black-su mb-3">Jobs by Partition</h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <PieChart>
-                <Pie
-                  isAnimationActive={false}
-                  data={partitionData}
-                  dataKey="value"
-                  nameKey="name"
-                  cx="50%"
-                  cy="50%"
-                  outerRadius={100}
-                  innerRadius={40}
-                  paddingAngle={2}
-                >
-                  {partitionData.map((_, i) => (
-                    <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip formatter={(v) => v.toLocaleString()} />
-                <Legend />
-              </PieChart>
-            </ResponsiveContainer>
+            <ChartFigure summary={`Jobs by partition: ${topList(partitionData, "name", "value", (v) => `${fmtCount(v)} jobs, ${Math.round((100 * v) / (total(partitionData, (r) => r.value) || 1))}%`, 4)}.`}>
+              <ResponsiveContainer width="100%" height={300}>
+                <PieChart>
+                  <Pie
+                    isAnimationActive={false}
+                    data={partitionData}
+                    dataKey="value"
+                    nameKey="name"
+                    cx="50%"
+                    cy="50%"
+                    outerRadius={100}
+                    innerRadius={40}
+                    paddingAngle={2}
+                  >
+                    {partitionData.map((_, i) => (
+                      <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(v) => v.toLocaleString()} />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            </ChartFigure>
           </div>
         )}
 
@@ -159,22 +162,24 @@ export default function ClusterDashboard({ cluster, startDate, endDate, node, gr
             <h3 className="text-lg font-semibold text-black-su mb-3">
               CPU Usage by Partition
             </h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={cpuData} margin={{ top: 20 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="Partition" />
-                <YAxis />
-                <Tooltip formatter={(v, name) => [typeof v === "number" ? (v % 1 === 0 ? v.toLocaleString() : v.toFixed(1)) : v, name]} />
-                <Bar isAnimationActive={false} dataKey="total_cpus" fill="#175E54" name="Total CPUs">
-                  <LabelList
-                    dataKey="avg_cpus_per_job"
-                    position="top"
-                    formatter={(v) => `${typeof v === "number" ? v.toFixed(1) : v} avg CPUs`}
-                    style={{ fontSize: 11, fill: "#585754" }}
-                  />
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+            <ChartFigure summary={`Total CPUs requested by partition: ${topList(cpuData, "Partition", "total_cpus", (v) => `${fmtCount(v)} CPUs`, 4)}.`}>
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={cpuData} margin={{ top: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="Partition" />
+                  <YAxis />
+                  <Tooltip formatter={(v, name) => [typeof v === "number" ? (v % 1 === 0 ? v.toLocaleString() : v.toFixed(1)) : v, name]} />
+                  <Bar isAnimationActive={false} dataKey="total_cpus" fill="#175E54" name="Total CPUs">
+                    <LabelList
+                      dataKey="avg_cpus_per_job"
+                      position="top"
+                      formatter={(v) => `${typeof v === "number" ? v.toFixed(1) : v} avg CPUs`}
+                      style={{ fontSize: 11, fill: "#585754" }}
+                    />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </ChartFigure>
           </div>
         )}
       </div>

@@ -8,12 +8,12 @@ export default function LoadingProgress({ completed, total, label, details }) {
         <span className="text-sm font-medium text-black-80">
           {label || "Loading"}
         </span>
-        <span className="text-sm text-black-60">
+        <span className="text-sm text-cool-grey">
           · {completed}/{total} queries
         </span>
       </div>
       {details && details.length > 0 && (
-        <div className="text-sm text-black-60">
+        <div className="text-sm text-cool-grey">
           {details.join(" · ")}
         </div>
       )}

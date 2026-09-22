@@ -7,6 +7,10 @@
  * `CASE` expression emitted by `ec2RateSqlExpr()` — both read `EC2_CATALOG`, so there is no
  * second price list to drift out of sync.
  *
+ * Requested memory, not used, is deliberate: decided 2026-09-22 in #10, once measured usage
+ * (`MaxRSSBytes`) became available and pricing the peak became an option. How much of the request
+ * a job actually used is the Utilization tab's job, not the cost model's.
+ *
  * PRICES ARE HARDCODED. Every entry below (price, vCPU, memory) was checked against AWS's own
  * on-demand price feed for us-west-2 Linux on PRICING_AS_OF. To re-check after bumping that date:
  *

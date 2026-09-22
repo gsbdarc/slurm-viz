@@ -10,7 +10,7 @@
     90deg,
     #B1040E 0%,
     #B1040E 30%,
-    #E04F39 50%,
+    #E94C0A 50%,
     #B1040E 70%,
     #B1040E 100%
   );
@@ -19,7 +19,7 @@
 }
 
 .su-brand-logo {
-  font-family: Stanford, "Source Serif 4", "Source Serif Pro", Georgia, Times, serif;
+  font-family: Stanford, "Source Sans 3", "Source Sans Pro", sans-serif;
   font-feature-settings: "liga";
   font-variant-ligatures: discretionary-ligatures;
   font-size: 20px;
@@ -38,33 +38,29 @@
   --color-cardinal-red-light: #B83A4B;
   --color-cardinal-red-dark: #820000;
   --color-digital-red: #B1040E;
-  --color-digital-red-light: #E50808;
   --color-digital-blue: #006CB8;
-  --color-digital-blue-dark: #00548F;
   --color-digital-green: #008566;
-  --color-digital-green-light: #1AECBA;
   --color-palo-alto: #175E54;
   --color-palo-verde: #279989;
+  --color-palo-verde-light: #5CBBAC;
   --color-black-su: #2E2D29;
   --color-black-80: #585754;
-  --color-black-60: #767674;
-  --color-black-40: #ABABA9;
-  --color-black-20: #D5D5D4;
-  --color-black-10: #EAEAEA;
+  --color-black-60: #82817F;
+  --color-black-40: #ACABAA;
+  --color-black-20: #D6D5D4;
+  --color-black-10: #EBEAEA;
   --color-fog-light: #F4F4F4;
-  --color-fog: #DAD7CB;
-  --color-fog-dark: #B6B1A9;
+  --color-fog: #D1D0CC;
+  --color-fog-dark: #B5B4AE;
   --color-cool-grey: #53565A;
   --color-poppy: #E98300;
-  --color-poppy-light: #F9A44A;
+  --color-poppy-light: #F2A83D;
   --color-sky: #4298B5;
   --color-sky-dark: #016895;
   --color-lagunita: #007C92;
-  --color-spirited: #E04F39;
+  --color-spirited: #E94C0A;
   --color-illuminating: #FEDD5C;
   --color-plum: #620059;
   --font-sans: "Source Sans 3", "Source Sans Pro", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --font-serif: "Source Serif 4", "Source Serif Pro", Georgia, Times, serif;
-  --font-slab: "Roboto Slab", Georgia, Times, serif;
-  --font-mono: "Roboto Mono", Menlo, "Courier New", monospace;
 }

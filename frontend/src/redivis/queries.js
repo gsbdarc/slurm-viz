@@ -79,8 +79,15 @@ function dedupCte(cluster, derivedColumns = "") {
     ? `, ${partitionExprSql(cluster)} AS _partition`
     : "";
 
+  // Corrected values replace the originals in place, so every query, filter and dropdown sees the
+  // fixed column without knowing it was ever wrong (see `cleanColumns` in `clusters.js`).
+  const clean = Object.entries(cluster.cleanColumns || {});
+  const replace = clean.length
+    ? ` REPLACE (${clean.map(([col, expr]) => `${expr} AS \`${col}\``).join(", ")})`
+    : "";
+
   return `jobs AS (
-    SELECT *${partitionCol}${derivedColumns}
+    SELECT *${replace}${partitionCol}${derivedColumns}
     FROM (
         SELECT *, ROW_NUMBER() OVER (
             PARTITION BY ${cluster.dedup.partition} ORDER BY ${cluster.dedup.order}
@@ -497,6 +504,89 @@ function agentSql(cluster) {
   return `CASE ${whens}\n              ELSE NULL END`;
 }
 
+/**
+ * Per-job usage % SQL, or null on a cluster without usage data, so callers drop the columns:
+ *
+ *   memPct      peak memory / request
+ *   cpuPct      CPU time / (NCPUS × elapsed)
+ *   gpuUtilPct  busiest 30s utilization sample, per GPU — a peak, not an average
+ *   gpuMemPct   peak GPU memory / (GPUs × the node model's memory per GPU)
+ *
+ * All are NULL unless the row has usage (see `usage` in `clusters.js`): `TotalCPU` reads
+ * `00:00:00` rather than NULL on rows without it, so an ungated CPU % would be a confident 0% for
+ * every job before 2026-01-22. The GPU pair is also NULL for jobs with no GPU, and for jobs too
+ * short to have been sampled. SAFE_DIVIDE covers zero requests and zero-second jobs.
+ *
+ * `gpuCountExpr` is the caller's GPU count, which lives in `sqlFragments` because it depends on
+ * the TRES column resolved at runtime.
+ */
+function usagePctSql(cluster, gpuCountExpr) {
+  const u = cluster.usage;
+  if (!cluster.features?.usage || !u) return null;
+  const c = cols(cluster);
+  const cpuCapacity = `CAST(${c.ncpus} AS FLOAT64) * ${cluster.elapsedSecondsSql}`;
+  const present = u.resized
+    ? `${u.presentSql} AND NOT ${resizedSql(cluster)}`
+    : u.presentSql;
+  const gpuSampled =
+    `${present} AND ${gpuCountExpr} > 0 ` +
+    `AND ${cluster.elapsedSecondsSql} >= ${Number(u.gpuMinSeconds) || 0}`;
+  const cpuRaw = `100 * SAFE_DIVIDE(${u.cpuSecondsSql}, ${cpuCapacity})`;
+  const cpuOk = u.cpuMaxPct ? ` AND ${cpuRaw} <= ${Number(u.cpuMaxPct)}` : "";
+  const gpuMemCapacity = `${gpuCountExpr} * ${gpuMemPerGpuBytesSql(cluster)}`;
+  return {
+    memPct: `IF(${present}, 100 * SAFE_DIVIDE(${u.memUsedBytesSql}, ${u.memReqBytesSql}), NULL)`,
+    cpuPct: `IF(${present}${cpuOk}, ${cpuRaw}, NULL)`,
+    gpuUtilPct: `IF(${gpuSampled}, SAFE_DIVIDE(${u.gpuUtilSql}, ${gpuCountExpr}), NULL)`,
+    gpuMemPct: `IF(${gpuSampled}, 100 * SAFE_DIVIDE(${u.gpuMemBytesSql}, ${gpuMemCapacity}), NULL)`,
+    // The raw pieces, for aggregates that must weight by time rather than average the per-job
+    // ratios. Reusing them keeps a job's inclusion identical in the table and in the totals.
+    present,
+    cpuSeconds: u.cpuSecondsSql,
+    cpuCapacity,
+    gpuMemCapacity,
+  };
+}
+
+/**
+ * Whether the current `jobs` row belongs to a resized job (see `usage.resized` in `clusters.js`).
+ *
+ * Reads the raw table because the RESIZING record may be the *other* row of the pair, and it is
+ * qualified with `jobs.` because it is only valid in a SELECT over the dedup CTE — unqualified
+ * names would bind to the subquery's own alias and match every row.
+ */
+function resizedSql(cluster) {
+  const c = cols(cluster);
+  const { state, withinDays } = cluster.usage.resized;
+  return `EXISTS (
+      SELECT 1 FROM \`${cluster.table}\` AS _rz
+      WHERE _rz.${c.state} = ${sqlString(state)}
+        AND _rz.${c.jobId} = jobs.${c.jobId}
+        AND ABS(TIMESTAMP_DIFF(TIMESTAMP(_rz.${c.submit}), TIMESTAMP(jobs.${c.submit}), DAY))
+            <= ${Number(withinDays)})`;
+}
+
+/**
+ * Memory per GPU, in bytes, for the model a job ran on — NULL when its nodes span more than one
+ * model (9 jobs as of 2026-09-22) or match none. Membership goes through `nodeMatchSql`, so bracket
+ * ranges like `yen-gpu[2-3]` resolve the same way the node filter does.
+ */
+function gpuMemPerGpuBytesSql(cluster) {
+  const models = cluster.usage?.gpuModels || [];
+  const c = cols(cluster);
+  if (!models.length || !c.nodeList) return "CAST(NULL AS FLOAT64)";
+  const reject = cluster.nodeList?.rejectValuePattern;
+  const touches = models.map(
+    (m) => `(${m.nodes.map((n) => nodeMatchSql(c.nodeList, n, reject)).join(" OR ")})`,
+  );
+  const whens = models.map((m, i) => {
+    const others = touches.filter((_, j) => j !== i);
+    const alone = others.length ? ` AND NOT (${others.join(" OR ")})` : "";
+    return `WHEN ${touches[i]}${alone} THEN ${Number(m.memGiB)} * POW(1024, 3)`;
+  });
+  return `(CASE ${whens.join(" ")} ELSE NULL END)`;
+}
+
 function waitCondSql(cluster) {
   const c = cols(cluster);
   const parts = [`${c.start} IS NOT NULL`, `${c.start} > ${c.submit}`];
@@ -539,6 +629,12 @@ async function buildWhere(cluster, start, end, filters = {}, extra = []) {
     const agent = agentSql(cluster);
     if (agent) conditions.push(`(${agent}) IS NOT NULL`);
   }
+  // Only valid over the `jobs` CTE — the resize test inside it is qualified `jobs.` — so callers
+  // must not pass it where the WHERE runs against the raw table (`getSamplingStats`).
+  if (filters.usageOnly) {
+    const usage = usagePctSql(cluster, "0");
+    if (usage) conditions.push(`(${usage.present})`);
+  }
   return conditions.join(" AND ");
 }
 
@@ -551,6 +647,7 @@ function filterKey(filters = {}) {
     filters.node,
     filters.group,
     filters.agentOnly ? "agent" : "",
+    filters.usageOnly ? "usage" : "",
   ]
     .map((v) => v || "")
     .join("|");
@@ -738,6 +835,12 @@ export async function getJobs(cluster, start, end, filters = {}) {
   const agent = agentSql(cluster);
   const agentSelect = agent ? `${agent} AS \`Agent\`,` : "";
 
+  const usage = usagePctSql(cluster, "`_gpu_count`");
+  const usageSelect = usage
+    ? `${usage.memPct} AS mem_used_pct, ${usage.cpuPct} AS cpu_used_pct,
+              ${usage.gpuUtilPct} AS gpu_util_pct, ${usage.gpuMemPct} AS gpu_mem_pct,`
+    : "";
+
   const [countRows, rows] = await Promise.all([
     runQuery(
       cluster,
@@ -761,6 +864,7 @@ export async function getJobs(cluster, start, end, filters = {}) {
               ${c.end || "CAST(NULL AS STRING)"} AS \`End\`,
               ${c.nodeList} AS \`NodeList\`,
               ${agentSelect}
+              ${usageSelect}
               \`_mem_gb\` AS ReqMem_GB,
               \`_gpu_count\` AS gpu_count,
               ${waitSecondsSql(cluster)} AS wait_seconds
@@ -835,10 +939,22 @@ export async function getUserSummaries(cluster, start, end, filters = {}) {
   // not do: it is free to return the NULL.
   const groupCol = c.group ? `MAX(${c.group}) AS \`Group\`,` : "";
 
+  // With usage data, read through `u` so each user's utilization ranks on exactly the jobs and
+  // arithmetic the Utilization tab uses; `u` carries every job column, so the rest is unchanged.
+  const withUsage = Boolean(cluster.features?.usage && cluster.usage);
+  const source = withUsage
+    ? `WITH ${frag.cte},\n     ${usageRowsCte(cluster, where)}\n     SELECT`
+    : `WITH ${frag.cte}\n     SELECT`;
+  const usageCols = withUsage
+    ? `COUNTIF(mem_pct IS NOT NULL) AS usage_jobs,
+         100 * ${USAGE_WEIGHTED.mem.replace(" AS mem_weighted", " AS mem_weighted_pct")},
+         100 * ${USAGE_WEIGHTED.cpu.replace(" AS cpu_weighted", " AS cpu_weighted_pct")},
+         ${USAGE_WEIGHTED.gpu},`
+    : "";
+
   return runQuery(
     cluster,
-    `WITH ${frag.cte}
-     SELECT
+    `${source}
          ${c.user} AS \`User\`,
          ${groupCol}
          COUNT(*) AS job_count,
@@ -846,8 +962,9 @@ export async function getUserSummaries(cluster, start, end, filters = {}) {
          SUM(${elapsed}) AS total_elapsed,
          SUM(CAST(${c.ncpus} AS FLOAT64) * ${elapsed}) / 3600 AS cpu_hours,
          ${costCol}
+         ${usageCols}
          SUM(IFNULL(${waitSecondsSql(cluster)}, 0)) / 3600.0 AS total_wait_hours
-     FROM jobs WHERE ${where}
+     FROM ${withUsage ? "u" : `jobs WHERE ${where}`}
      GROUP BY ${c.user} ORDER BY cpu_hours DESC`,
     key,
   );
@@ -1065,4 +1182,128 @@ export async function getUsersByPeriod(cluster, start, end, filters = {}) {
   );
 
   return { granularity: gran, data: rows };
+}
+
+/**
+ * Per-job usage columns over the dedup CTE, as a CTE named `u` — shared by the Utilization tab and
+ * the Users tab so a job counts toward a resource identically in both. `SELECT *` keeps every job
+ * column available for the caller's own aggregates. It must be a CTE rather than inlined into
+ * `SUM()`: the resize test inside `usagePctSql` is a correlated EXISTS, which BigQuery will not
+ * evaluate inside an aggregate.
+ *
+ * Every factor of a byte × second product is FLOAT64, because the sums overflow INT64.
+ */
+function usageRowsCte(cluster, where) {
+  const u = cluster.usage;
+  const usage = usagePctSql(cluster, "`_gpu_count`");
+  return `u AS (
+       SELECT *,
+              ${usage.memPct} AS mem_pct,
+              ${usage.cpuPct} AS cpu_pct,
+              ${usage.gpuUtilPct} AS gpu_util_pct,
+              ${usage.gpuMemPct} AS gpu_mem_pct,
+              CAST(${cluster.elapsedSecondsSql} AS FLOAT64) AS el,
+              CAST(${u.memUsedBytesSql} AS FLOAT64) AS mem_used,
+              CAST(${u.memReqBytesSql} AS FLOAT64) AS mem_req,
+              ${usage.cpuSeconds} AS cpu_s,
+              ${usage.cpuCapacity} AS cpu_cap,
+              \`_gpu_count\` AS gpus,
+              CAST(${u.gpuMemBytesSql} AS FLOAT64) AS gpu_mem_used,
+              ${usage.gpuMemCapacity} AS gpu_mem_cap
+       FROM jobs WHERE ${where}
+     )`;
+}
+
+/**
+ * Time-weighted usage aggregates over `usageRowsCte`, for any GROUP BY. Each counts only the jobs
+ * whose per-job % is populated, so the denominators match the columns in the jobs list.
+ */
+const USAGE_WEIGHTED = {
+  mem: `SAFE_DIVIDE(SUM(IF(mem_pct IS NOT NULL, mem_used * el, 0)),
+                       SUM(IF(mem_pct IS NOT NULL, mem_req * el, 0))) AS mem_weighted,
+           SUM(IF(mem_pct IS NOT NULL, GREATEST(mem_req - mem_used, 0) * el, 0))
+               / POW(1024, 3) / 3600 AS mem_unused_gib_hours`,
+  cpu: `SAFE_DIVIDE(SUM(IF(cpu_pct IS NOT NULL, cpu_s, 0)),
+                       SUM(IF(cpu_pct IS NOT NULL, cpu_cap, 0))) AS cpu_weighted,
+           SUM(IF(cpu_pct IS NOT NULL, GREATEST(cpu_cap - cpu_s, 0), 0)) / 3600 AS cpu_idle_hours`,
+  gpu: `SUM(IF(gpu_util_pct IS NOT NULL, gpus * el, 0)) / 3600 AS gpu_hours,
+           SUM(IF(gpu_util_pct = 0, gpus * el, 0)) / 3600 AS gpu_idle_hours`,
+};
+
+/**
+ * Requested vs used, for the Utilization tab: `{ summary, histogram }`, or null on a cluster
+ * without usage data.
+ *
+ * Two views of the same jobs, because they answer different questions. The **median** is the
+ * typical job; the **time-weighted** share is resource-hours used over resource-hours reserved, where
+ * a week-long job outweighs a thousand one-minute ones. Over-requesting is concentrated in short
+ * jobs, so the two routinely differ several-fold (memory: ~3% median against ~38% weighted).
+ *
+ * A job counts toward a resource exactly when its column in the jobs list is populated — every
+ * filter reuses the `usagePctSql` expressions rather than restating them.
+ *
+ * GPU utilization gets no time-weighted figure: `GPUUtil` is the busiest 30s sample, and weighting
+ * peaks by hours would manufacture an average Slurm never measured. What *is* sound is GPU-hours in
+ * jobs whose peak was 0 — no sample ever caught the GPU working.
+ *
+ * Byte × second products overflow INT64 when summed, so every factor is cast to FLOAT64 first.
+ */
+export async function getUtilization(cluster, start, end, filters = {}) {
+  if (!cluster.features?.usage || !cluster.usage) return null;
+  const [where, frag] = await Promise.all([
+    buildWhere(cluster, start, end, filters),
+    sqlFragments(cluster),
+  ]);
+  const key = ck(cluster, "utilization", start, end, filterKey(filters));
+
+  const base = `WITH ${frag.cte},
+     ${usageRowsCte(cluster, where)}`;
+
+  const [summaryRows, histogram] = await Promise.all([
+    runQuery(
+      cluster,
+      `${base}
+       SELECT
+           COUNT(*) AS jobs_in_range,
+
+           COUNTIF(mem_pct IS NOT NULL) AS mem_jobs,
+           APPROX_QUANTILES(mem_pct, 100)[OFFSET(50)] AS mem_median,
+           ${USAGE_WEIGHTED.mem},
+
+           COUNTIF(cpu_pct IS NOT NULL) AS cpu_jobs,
+           APPROX_QUANTILES(cpu_pct, 100)[OFFSET(50)] AS cpu_median,
+           ${USAGE_WEIGHTED.cpu},
+
+           COUNTIF(gpu_util_pct IS NOT NULL) AS gpu_jobs,
+           APPROX_QUANTILES(gpu_util_pct, 100)[OFFSET(50)] AS gpu_util_median,
+           ${USAGE_WEIGHTED.gpu},
+
+           COUNTIF(gpu_mem_pct IS NOT NULL) AS gpu_mem_jobs,
+           APPROX_QUANTILES(gpu_mem_pct, 100)[OFFSET(50)] AS gpu_mem_median,
+           SAFE_DIVIDE(SUM(IF(gpu_mem_pct IS NOT NULL, gpu_mem_used * el, 0)),
+                       SUM(IF(gpu_mem_pct IS NOT NULL, gpu_mem_cap * el, 0))) AS gpu_mem_weighted
+       FROM u`,
+      `${key}_summary`,
+    ),
+    // Ten 10% bins plus one for anything over 100%. Exactly 100% lands in 90–100, so a job that
+    // used precisely what it asked for is not reported as over.
+    runQuery(
+      cluster,
+      `${base}
+       SELECT m.metric,
+              IF(m.pct > 100, 10, LEAST(CAST(FLOOR(m.pct / 10) AS INT64), 9)) AS bin,
+              COUNT(*) AS jobs
+       FROM u, UNNEST([
+           STRUCT('mem' AS metric, mem_pct AS pct),
+           STRUCT('cpu', cpu_pct),
+           STRUCT('gpu_util', gpu_util_pct),
+           STRUCT('gpu_mem', gpu_mem_pct)
+       ]) AS m
+       WHERE m.pct IS NOT NULL
+       GROUP BY m.metric, bin ORDER BY m.metric, bin`,
+      `${key}_histogram`,
+    ),
+  ]);
+
+  return { summary: summaryRows[0] || {}, histogram };
 }

@@ -14,16 +14,17 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts";
+import ChartFigure, { fmtCount, topList, peak, total } from "./ChartFigure";
 
 const COLORS = [
   "#B1040E",
   "#008566",
-  "#E98300",
+  "#B36700",
   "#4298B5",
   "#175E54",
   "#620059",
   "#007C92",
-  "#E04F39",
+  "#E94C0A",
 ];
 
 const USER_COLUMNS = [
@@ -35,6 +36,59 @@ const USER_COLUMNS = [
   { key: "cpu_hours", label: "CPU Hours", numeric: true },
   { key: "ec2_cost_usd", label: "EC2 Cost", currency: true, feature: "ec2Cost" },
   { key: "total_wait_hours", label: "Queue Wait (hrs)", numeric: true },
+  // Utilization, computed exactly as on the Utilization tab (`usageRowsCte`). Sort any of these to
+  // rank users; the unused and idle totals rank by how much was held back, which is what matters
+  // for contention, rather than by the ratio, which flatters or punishes small users.
+  {
+    key: "usage_jobs",
+    label: "Measured Jobs",
+    numeric: true,
+    feature: "usage",
+    title:
+      "Jobs with usage data: finished, submitted on or after 2026-01-22, and not resized. The " +
+      "utilization columns cover only these.",
+  },
+  {
+    key: "mem_weighted_pct",
+    label: "Mem Used",
+    numeric: true,
+    percent: true,
+    feature: "usage",
+    title: "Peak memory as a share of requested memory, weighted by runtime (GiB-hours used ÷ requested).",
+  },
+  {
+    key: "mem_unused_gib_hours",
+    label: "Unused Mem (GiB-h)",
+    numeric: true,
+    feature: "usage",
+    title:
+      "Memory requested above each job's peak, times its runtime. A floor on waste, since jobs sit " +
+      "below their peak most of the time.",
+  },
+  {
+    key: "cpu_weighted_pct",
+    label: "CPU Used",
+    numeric: true,
+    percent: true,
+    feature: "usage",
+    title: "CPU time as a share of cores × runtime, across the user's measured jobs.",
+  },
+  {
+    key: "cpu_idle_hours",
+    label: "Idle CPU-h",
+    numeric: true,
+    feature: "usage",
+    title: "Core-hours reserved but not used.",
+  },
+  {
+    key: "gpu_idle_hours",
+    label: "Idle GPU-h",
+    numeric: true,
+    feature: "usage",
+    title:
+      "GPU-hours in jobs where no 30-second sample ever caught the GPU working. Users with no " +
+      "GPU jobs read 0.",
+  },
 ];
 
 /** Columns the cluster can actually populate — same idiom as `jobColumnsFor`. */
@@ -73,6 +127,10 @@ function UserTable({ users, columns }) {
   const fmtVal = (col, val) => {
     if (val == null) return "—";
     if (col.currency) return formatUsd(val);
+    if (col.percent) {
+      const n = Number(val);
+      return n > 0 && n < 1 ? "<1%" : `${Math.round(n)}%`;
+    }
     if (col.numeric && typeof val === "number")
       return val % 1 === 0 ? val.toLocaleString() : val.toFixed(1);
     return String(val);
@@ -90,6 +148,7 @@ function UserTable({ users, columns }) {
               {columns.map((col) => (
                 <th
                   key={col.key}
+                  title={col.title}
                   className="px-4 py-2 font-medium text-black-su cursor-pointer select-none hover:bg-fog-dark"
                   onClick={() => handleSort(col.key)}
                 >
@@ -159,7 +218,7 @@ export default function UserDashboard({ cluster, startDate, endDate, node, group
 
   if (loading && !usersData)
     return <LoadingProgress completed={completed} total={total} label="Loading users" details={details} />;
-  if (error) return <div className="text-spirited p-4">Error: {error}</div>;
+  if (error) return <div className="text-digital-red p-4">Error: {error}</div>;
 
   const users = usersData || [];
   const topByCpuHours = [...users].sort((a, b) => (b.cpu_hours || 0) - (a.cpu_hours || 0)).slice(0, 10);
@@ -204,7 +263,7 @@ export default function UserDashboard({ cluster, startDate, endDate, node, group
         {partition && (
           <button
             onClick={() => setPartition("")}
-            className="text-sm text-black-60 hover:text-black-su px-2"
+            className="text-sm text-cool-grey hover:text-black-su px-2"
           >
             Clear
           </button>
@@ -222,19 +281,21 @@ export default function UserDashboard({ cluster, startDate, endDate, node, group
             <h3 className="text-lg font-semibold text-black-su mb-3">
               Top Users by CPU Hours{partitionSuffix}
             </h3>
-            <ResponsiveContainer width="100%" height={400}>
-              <BarChart data={topByCpuHours} layout="vertical" margin={{ left: 10 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis type="number" />
-                <YAxis dataKey="User" type="category" width={120} tick={{ fontSize: 13 }} />
-                <Tooltip
-                  formatter={(v) =>
-                    typeof v === "number" ? v.toFixed(1) : v
-                  }
-                />
-                <Bar isAnimationActive={false} dataKey="cpu_hours" fill="#B1040E" name="CPU Hours" />
-              </BarChart>
-            </ResponsiveContainer>
+            <ChartFigure summary={`Top users by CPU hours: ${topList(topByCpuHours, "User", "cpu_hours", (v) => `${fmtCount(v)} CPU-hours`)}.`}>
+              <ResponsiveContainer width="100%" height={400}>
+                <BarChart data={topByCpuHours} layout="vertical" margin={{ left: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis type="number" />
+                  <YAxis dataKey="User" type="category" width={120} tick={{ fontSize: 13 }} />
+                  <Tooltip
+                    formatter={(v) =>
+                      typeof v === "number" ? v.toFixed(1) : v
+                    }
+                  />
+                  <Bar isAnimationActive={false} dataKey="cpu_hours" fill="#B1040E" name="CPU Hours" />
+                </BarChart>
+              </ResponsiveContainer>
+            </ChartFigure>
           </div>
         )}
 
@@ -243,15 +304,17 @@ export default function UserDashboard({ cluster, startDate, endDate, node, group
             <h3 className="text-lg font-semibold text-black-su mb-3">
               Top Users by Job Count{partitionSuffix}
             </h3>
-            <ResponsiveContainer width="100%" height={400}>
-              <BarChart data={topByJobCount} layout="vertical" margin={{ left: 10 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis type="number" />
-                <YAxis dataKey="User" type="category" width={120} tick={{ fontSize: 13 }} />
-                <Tooltip />
-                <Bar isAnimationActive={false} dataKey="job_count" fill="#008566" name="Jobs" />
-              </BarChart>
-            </ResponsiveContainer>
+            <ChartFigure summary={`Top users by job count: ${topList(topByJobCount, "User", "job_count", (v) => `${fmtCount(v)} jobs`)}.`}>
+              <ResponsiveContainer width="100%" height={400}>
+                <BarChart data={topByJobCount} layout="vertical" margin={{ left: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis type="number" />
+                  <YAxis dataKey="User" type="category" width={120} tick={{ fontSize: 13 }} />
+                  <Tooltip />
+                  <Bar isAnimationActive={false} dataKey="job_count" fill="#008566" name="Jobs" />
+                </BarChart>
+              </ResponsiveContainer>
+            </ChartFigure>
           </div>
         )}
       </div>
@@ -261,15 +324,17 @@ export default function UserDashboard({ cluster, startDate, endDate, node, group
           <h3 className="text-lg font-semibold text-black-su mb-3">
             Top Users by EC2 Cost{partitionSuffix}
           </h3>
-          <ResponsiveContainer width="100%" height={400}>
-            <BarChart data={topByCost} layout="vertical" margin={{ left: 10 }}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis type="number" tickFormatter={formatUsd} />
-              <YAxis dataKey="User" type="category" width={120} tick={{ fontSize: 13 }} />
-              <Tooltip formatter={(v) => formatUsd(v)} />
-              <Bar isAnimationActive={false} dataKey="ec2_cost_usd" fill="#E98300" name="EC2 Cost" />
-            </BarChart>
-          </ResponsiveContainer>
+          <ChartFigure summary={`Top users by EC2-equivalent cost: ${topList(topByCost, "User", "ec2_cost_usd", formatUsd)}.`}>
+            <ResponsiveContainer width="100%" height={400}>
+              <BarChart data={topByCost} layout="vertical" margin={{ left: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis type="number" tickFormatter={formatUsd} />
+                <YAxis dataKey="User" type="category" width={120} tick={{ fontSize: 13 }} />
+                <Tooltip formatter={(v) => formatUsd(v)} />
+                <Bar isAnimationActive={false} dataKey="ec2_cost_usd" fill="#B36700" name="EC2 Cost" />
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartFigure>
         </div>
       )}
 
@@ -278,27 +343,29 @@ export default function UserDashboard({ cluster, startDate, endDate, node, group
           <h3 className="text-lg font-semibold text-black-su mb-3">
             Unique Users by {granLabel} by Partition{partitionSuffix}
           </h3>
-          <ResponsiveContainer width="100%" height={350}>
-            <BarChart data={periodData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="period" />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              {partitions.map((p, i) => (
-                <Bar
+          <ChartFigure summary={`Unique users per ${granLabel.toLowerCase()} by partition: ${partitions.map((p) => { const pk = peak(periodData, "period", (r) => r[p]); return `${p} up to ${pk ? fmtCount(pk.value) : 0}`; }).join(", ") || "none"}.`}>
+            <ResponsiveContainer width="100%" height={350}>
+              <BarChart data={periodData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="period" />
+                <YAxis />
+                <Tooltip />
+                <Legend />
+                {partitions.map((p, i) => (
+                  <Bar
 
-                  isAnimationActive={false}
+                    isAnimationActive={false}
 
-                  key={p}
-                  dataKey={p}
-                  stackId="a"
-                  fill={COLORS[i % COLORS.length]}
-                  name={p}
-                />
-              ))}
-            </BarChart>
-          </ResponsiveContainer>
+                    key={p}
+                    dataKey={p}
+                    stackId="a"
+                    fill={COLORS[i % COLORS.length]}
+                    name={p}
+                  />
+                ))}
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartFigure>
         </div>
       )}
 

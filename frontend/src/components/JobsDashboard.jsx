@@ -3,6 +3,7 @@ import { useRedivisQuery } from "../hooks/useRedivisQuery";
 import { getSummary, getJobs, getTimeline, getFilterOptions, getWaitTimes, ck } from "../redivis/queries";
 import { jobCost, formatUsd } from "../lib/ec2";
 import LoadingProgress from "./LoadingProgress";
+import JobTable, { jobColumnsFor } from "./JobTable";
 import { parsePeriod, formatPeriod } from "../lib/periods";
 import {
   BarChart,
@@ -16,6 +17,7 @@ import {
   Line,
   Legend,
 } from "recharts";
+import ChartFigure, { fmtCount, topList, peak, total } from "./ChartFigure";
 
 function MiniCards({ data, label, showCost, showStates }) {
   if (!data) return null;
@@ -41,7 +43,7 @@ function MiniCards({ data, label, showCost, showStates }) {
 
   return (
     <div>
-      <div className="text-xs font-medium text-black-60 uppercase tracking-wide mb-2">
+      <div className="text-xs font-medium text-cool-grey uppercase tracking-wide mb-2">
         {label}
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2">
@@ -51,7 +53,7 @@ function MiniCards({ data, label, showCost, showStates }) {
             className="bg-white rounded-lg shadow-sm border border-black-20 p-2 text-center"
           >
             <div className="text-lg font-bold text-black-su">{c.value}</div>
-            <div className="text-xs text-black-60">{c.label}</div>
+            <div className="text-xs text-cool-grey">{c.label}</div>
           </div>
         ))}
       </div>
@@ -74,8 +76,12 @@ function fmtWait(minutes) {
   return `${trim(minutes / 1440)}d`;
 }
 
-/** Validated as a categorical set: worst adjacent pair ΔE 11.9 (protan), 20.9 normal vision. */
-const WAIT_COLORS = { median: "#008566", avg: "#E98300", max: "#B83A4B" };
+/**
+ * Validated as a categorical set: worst adjacent pair ΔE 16.1 (protan), 16.8 normal vision.
+ * `avg` was Poppy, which fails 3:1 against the plot; Poppy Dark clears that but sits ΔE 12.8 from
+ * `max` under normal vision, below the 15 floor. Digital Blue clears both.
+ */
+const WAIT_COLORS = { median: "#008566", avg: "#006CB8", max: "#B83A4B" };
 
 /** A filled dot with a surface ring, so points stay legible where the series overlap. */
 const waitDot = (fill, r = 3) => ({ r, fill, stroke: "#fff", strokeWidth: 1.5 });
@@ -122,148 +128,6 @@ function periodSequenceKeys(startDate, endDate, gran) {
     }
   }
   return keys;
-}
-
-const JOB_COLUMNS = [
-  { key: "JobID", label: "Job ID" },
-  { key: "JobName", label: "Name" },
-  { key: "User", label: "User" },
-  { key: "Partition", label: "Partition" },
-  { key: "State", label: "State", feature: "jobStates" },
-  {
-    key: "Agent",
-    label: "Agent",
-    feature: "agentDetection",
-    title:
-      "The AI coding agent whose scratch or worktree path appears in this job's WorkDir or " +
-      "SubmitLine. Blank means no such path — most often a person, but also an agent that " +
-      "submitted a script from the project tree, which leaves no trace. A floor, not a census.",
-  },
-  { key: "NCPUS", label: "CPUs", numeric: true },
-  { key: "ReqMem_GB", label: "Memory (GB)", numeric: true, feature: "memory" },
-  { key: "gpu_count", label: "GPUs", numeric: true, feature: "gpus" },
-  { key: "ec2_cost_usd", label: "EC2 Cost", currency: true, feature: "ec2Cost" },
-  { key: "ec2_instance", label: "EC2 Instance", feature: "ec2Cost" },
-  { key: "wait_seconds", label: "Queue Wait (s)", numeric: true, feature: "waitTimes" },
-  { key: "ElapsedRaw", label: "Elapsed (s)", numeric: true },
-  { key: "Submit", label: "Submit", date: true },
-  { key: "Start", label: "Start", date: true },
-  { key: "End", label: "End", date: true, feature: "hasEndColumn" },
-  { key: "NodeList", label: "Nodes" },
-];
-
-/**
- * Columns a cluster can actually populate. `feature: null`-guarded entries would otherwise render a
- * column of em-dashes, which reads as "no GPUs were used" rather than "this dump can't tell you".
- */
-function jobColumnsFor(cluster) {
-  const available = {
-    ...cluster.features,
-    hasEndColumn: Boolean(cluster.columns.end),
-  };
-  // Keyed on `sampling`, not on a state flag: a runtime is a lower bound because the source samples
-  // a live queue, which is the actual cause, and stays right for a sampled cluster that does record
-  // states.
-  return JOB_COLUMNS.filter((c) => !c.feature || available[c.feature]).map((c) =>
-    c.key === "ElapsedRaw" && cluster.sampling
-      ? {
-          ...c,
-          label: "Observed runtime (s)",
-          title:
-            `Last runtime seen before the job left the queue, sampled ${cluster.sampling.label} — ` +
-            "a lower bound, not the final elapsed time.",
-        }
-      : c,
-  );
-}
-
-function JobTable({ data, sort, setSort, columns, showCost }) {
-  const handleSort = (col) => {
-    setSort((prev) =>
-      prev.col === col ? { col, asc: !prev.asc } : { col, asc: true },
-    );
-  };
-
-  const colMeta = Object.fromEntries(columns.map((c) => [c.key, c]));
-  const sorted = [...(data.jobs || [])].sort((a, b) => {
-    if (!sort.col) return 0;
-    let av = a[sort.col], bv = b[sort.col];
-    if (av == null && bv == null) return 0;
-    if (av == null) return 1;
-    if (bv == null) return -1;
-    const meta = colMeta[sort.col] || {};
-    if (meta.numeric || meta.currency) {
-      const na = Number(av), nb = Number(bv);
-      return sort.asc ? na - nb : nb - na;
-    }
-    if (meta.date) {
-      const da = new Date(av).getTime(), db = new Date(bv).getTime();
-      return sort.asc ? da - db : db - da;
-    }
-    av = String(av);
-    bv = String(bv);
-    return sort.asc ? av.localeCompare(bv) : bv.localeCompare(av);
-  });
-
-  const fmtVal = (col, val) => {
-    if (val == null) return "—";
-    if (col.currency) return formatUsd(val);
-    if (col.numeric && typeof val === "number")
-      return val % 1 === 0 ? val.toLocaleString() : val.toFixed(2);
-    return String(val);
-  };
-
-  const anyOversized = sorted.some((j) => j.ec2_oversized);
-
-  return (
-    <div className="bg-white rounded-lg shadow border border-black-20 overflow-hidden">
-      <div className="p-4 border-b border-black-20">
-        <h3 className="text-lg font-semibold text-black-su">
-          Jobs ({data.total?.toLocaleString()} total, showing{" "}
-          {data.jobs?.length})
-        </h3>
-        {showCost && (
-          <p className="text-xs text-black-60 mt-1">
-            EC2 cost across all {data.total?.toLocaleString()} matching jobs:{" "}
-            <span className="font-medium text-black-su">
-              {formatUsd(data.total_ec2_cost_usd)}
-            </span>
-            {anyOversized && " · † job exceeds every catalog instance; cost shown is a lower bound"}
-          </p>
-        )}
-      </div>
-      <div className="overflow-x-auto max-h-96">
-        <table className="w-full text-sm text-left">
-          <thead className="bg-fog sticky top-0">
-            <tr>
-              {columns.map((col) => (
-                <th
-                  key={col.key}
-                  title={col.title}
-                  className="px-4 py-2 font-medium text-black-su cursor-pointer select-none hover:bg-fog-dark"
-                  onClick={() => handleSort(col.key)}
-                >
-                  {col.label}
-                  {sort.col === col.key && (sort.asc ? " ▲" : " ▼")}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.slice(0, 200).map((job, i) => (
-              <tr key={i} className="border-t border-black-20 hover:bg-black-10">
-                {columns.map((col) => (
-                  <td key={col.key} className="px-4 py-2 whitespace-nowrap">
-                    {fmtVal(col, job[col.key])}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
 }
 
 export default function JobsDashboard({ cluster, startDate, endDate, node, group }) {
@@ -367,7 +231,7 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
   if (hasFilters && !lFiltered && filteredSummary) details.push(`${filteredSummary.total_jobs?.toLocaleString()} filtered`);
 
   if (anyLoading && !data) return <LoadingProgress completed={completed} total={total} label="Loading jobs" details={details} />;
-  if (error) return <div className="text-spirited p-4">Error: {error}</div>;
+  if (error) return <div className="text-digital-red p-4">Error: {error}</div>;
 
   const filterParts = [
     filters.user && `user: ${filters.user}`,
@@ -543,7 +407,7 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
             onClick={() =>
               setLocalFilters({ state: "", user: "", partition: "", agentOnly: false })
             }
-            className="text-sm text-black-60 hover:text-black-su px-2"
+            className="text-sm text-cool-grey hover:text-black-su px-2"
           >
             Clear
           </button>
@@ -567,15 +431,17 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
       {stateData.length > 0 && (
         <div className="bg-white rounded-lg shadow border border-black-20 p-4">
           <h3 className="text-lg font-semibold text-black-su mb-3">Jobs by State{filterSuffix}</h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={stateData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="name" />
-              <YAxis />
-              <Tooltip />
-              <Bar isAnimationActive={false} dataKey="value" fill="#B1040E" />
-            </BarChart>
-          </ResponsiveContainer>
+          <ChartFigure summary={`Jobs by state: ${topList(stateData, "name", "value", (v) => `${fmtCount(v)} jobs`, 4)}.`}>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={stateData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="name" />
+                <YAxis />
+                <Tooltip />
+                <Bar isAnimationActive={false} dataKey="value" fill="#B1040E" />
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartFigure>
         </div>
       )}
 
@@ -584,38 +450,40 @@ export default function JobsDashboard({ cluster, startDate, endDate, node, group
           <h3 className="text-lg font-semibold text-black-su mb-3">
             Job Submissions &amp; Queue Wait Time{filterSuffix}
           </h3>
-          <ResponsiveContainer width="100%" height={350}>
-            <ComposedChart data={combinedData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="label" />
-              <YAxis yAxisId="left" label={{ value: "Jobs", angle: -90, position: "insideLeft" }} />
-              <YAxis
-                yAxisId="right"
-                orientation="right"
-                scale="log"
-                domain={waitDomain || ["auto", "auto"]}
-                ticks={waitTicks.length ? waitTicks : undefined}
-                tickFormatter={fmtWait}
-                allowDataOverflow
-                label={{ value: "Queue wait (log)", angle: 90, position: "insideRight" }}
-              />
-              <Tooltip
-                formatter={(v, name) =>
-                  name === "Jobs" ? v.toLocaleString() : fmtWait(v)
-                }
-              />
-              <Legend />
-              <Bar isAnimationActive={false} yAxisId="left" dataKey="count" fill="#4298B5" name="Jobs" opacity={0.4} />
-              {/* Dots are not decoration here. Once idle periods break the lines, a period whose
-                  neighbours are both empty becomes a single point, and a lone point on a dotless
-                  line draws nothing at all — Dec 2025 above has 33 jobs averaging a 94-minute wait
-                  and would otherwise be invisible. They carry an explicit fill because recharts
-                  defaults a dot to white, which on a white card is the same as not drawing it. */}
-              <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="median" stroke={WAIT_COLORS.median} strokeWidth={2} dot={waitDot(WAIT_COLORS.median)} activeDot={{ r: 5 }} name="Median wait" connectNulls={false} />
-              <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="avg" stroke={WAIT_COLORS.avg} strokeWidth={2} dot={waitDot(WAIT_COLORS.avg)} activeDot={{ r: 5 }} name="Avg wait" connectNulls={false} />
-              <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="max" stroke={WAIT_COLORS.max} strokeWidth={1} strokeDasharray="4 4" dot={waitDot(WAIT_COLORS.max, 2.5)} activeDot={{ r: 4 }} name="Max wait" connectNulls={false} />
-            </ComposedChart>
-          </ResponsiveContainer>
+          <ChartFigure summary={`Jobs submitted per ${timelineGran}: ${fmtCount(total(combinedData, (r) => r.count))} in total${(() => { const p = peak(combinedData, "label", (r) => r.count); return p ? `, peaking at ${fmtCount(p.value)} in ${p.at}` : ""; })()}${(() => { const m = peak(combinedData, "label", (r) => r.median); return m ? `. Median queue wait peaked at ${fmtWait(m.value)} in ${m.at}` : ""; })()}.`}>
+            <ResponsiveContainer width="100%" height={350}>
+              <ComposedChart data={combinedData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="label" />
+                <YAxis yAxisId="left" label={{ value: "Jobs", angle: -90, position: "insideLeft" }} />
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  scale="log"
+                  domain={waitDomain || ["auto", "auto"]}
+                  ticks={waitTicks.length ? waitTicks : undefined}
+                  tickFormatter={fmtWait}
+                  allowDataOverflow
+                  label={{ value: "Queue wait (log)", angle: 90, position: "insideRight" }}
+                />
+                <Tooltip
+                  formatter={(v, name) =>
+                    name === "Jobs" ? v.toLocaleString() : fmtWait(v)
+                  }
+                />
+                <Legend />
+                <Bar isAnimationActive={false} yAxisId="left" dataKey="count" fill="#4298B5" name="Jobs" opacity={0.4} />
+                {/* Dots are not decoration here. Once idle periods break the lines, a period whose
+                    neighbours are both empty becomes a single point, and a lone point on a dotless
+                    line draws nothing at all — Dec 2025 above has 33 jobs averaging a 94-minute wait
+                    and would otherwise be invisible. They carry an explicit fill because recharts
+                    defaults a dot to white, which on a white card is the same as not drawing it. */}
+                <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="median" stroke={WAIT_COLORS.median} strokeWidth={2} dot={waitDot(WAIT_COLORS.median)} activeDot={{ r: 5 }} name="Median wait" connectNulls={false} />
+                <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="avg" stroke={WAIT_COLORS.avg} strokeWidth={2} dot={waitDot(WAIT_COLORS.avg)} activeDot={{ r: 5 }} name="Avg wait" connectNulls={false} />
+                <Line isAnimationActive={false} yAxisId="right" type="monotone" dataKey="max" stroke={WAIT_COLORS.max} strokeWidth={1} strokeDasharray="4 4" dot={waitDot(WAIT_COLORS.max, 2.5)} activeDot={{ r: 4 }} name="Max wait" connectNulls={false} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </ChartFigure>
         </div>
       )}
 

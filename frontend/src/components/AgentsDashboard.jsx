@@ -22,16 +22,18 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts";
+import ChartFigure, { fmtCount, topList, peak, total } from "./ChartFigure";
 
 /** Stable per-agent colour, so a series keeps its colour across all three charts. */
 const AGENT_COLORS = {
   "claude-code": "#B1040E",
   codex: "#008566",
 };
-const FALLBACK_COLORS = ["#E98300", "#4298B5", "#620059", "#007C92"];
+const FALLBACK_COLORS = ["#B36700", "#4298B5", "#620059", "#007C92"];
 
 function colorFor(agent, index) {
-  return AGENT_COLORS[agent] || FALLBACK_COLORS[index % FALLBACK_COLORS.length];
+  // `index` is the agent's position in the agent list, never a row's rank; -1 (not listed) maps to 0.
+  return AGENT_COLORS[agent] || FALLBACK_COLORS[Math.max(index, 0) % FALLBACK_COLORS.length];
 }
 
 function fmtInt(n) {
@@ -53,9 +55,9 @@ function fmtDate(val) {
 function Card({ label, value, sub }) {
   return (
     <div className="bg-white rounded-lg shadow border border-black-20 p-4">
-      <div className="text-sm text-black-60">{label}</div>
+      <div className="text-sm text-cool-grey">{label}</div>
       <div className="text-2xl font-semibold text-black-su mt-1">{value}</div>
-      {sub && <div className="text-xs text-black-60 mt-1">{sub}</div>}
+      {sub && <div className="text-xs text-cool-grey mt-1">{sub}</div>}
     </div>
   );
 }
@@ -92,7 +94,7 @@ function AgentUserTable({ rows }) {
     <div className="bg-white rounded-lg shadow border border-black-20 overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
-          <thead className="bg-black-5 border-b border-black-20">
+          <thead className="bg-fog border-b border-black-20">
             <tr>
               {cols.map((c) => (
                 <th
@@ -129,7 +131,7 @@ function AgentUserTable({ rows }) {
             ))}
             {sorted.length === 0 && (
               <tr>
-                <td colSpan={cols.length} className="px-3 py-6 text-center text-black-60">
+                <td colSpan={cols.length} className="px-3 py-6 text-center text-cool-grey">
                   No agent-submitted jobs in this range.
                 </td>
               </tr>
@@ -189,7 +191,7 @@ export default function AgentsDashboard({ cluster, startDate, endDate, node, gro
         details={details}
       />
     );
-  if (error) return <div className="text-spirited p-4">Error: {error}</div>;
+  if (error) return <div className="text-digital-red p-4">Error: {error}</div>;
 
   // The NULL-agent row is the rest of the cluster's work. Split it out so the headline can be a
   // share rather than a bare count — "409 jobs" means nothing without the denominator.
@@ -241,7 +243,7 @@ export default function AgentsDashboard({ cluster, startDate, endDate, node, gro
 
   return (
     <div className="space-y-6">
-      <div className="bg-white rounded-lg shadow border border-black-20 p-3 text-sm text-black-60">
+      <div className="bg-white rounded-lg shadow border border-black-20 p-3 text-sm text-cool-grey">
         Counts jobs whose <code>WorkDir</code> or <code>SubmitLine</code> contains an AI coding
         agent's scratch or worktree path. An agent that submits a script from the project tree
         leaves no such path and is counted as human work, so these are lower bounds — a floor, not
@@ -283,75 +285,94 @@ export default function AgentsDashboard({ cluster, startDate, endDate, node, gro
               <h3 className="font-semibold text-black-su mb-3">
                 Agent jobs per {periodLabel(gran).toLowerCase()}
               </h3>
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={periodData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="period" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip />
-                  <Legend />
-                  {agentNames.map((a, i) => (
-                    <Bar key={a} dataKey={a} stackId="jobs" fill={colorFor(a, i)} name={a} />
-                  ))}
-                </BarChart>
-              </ResponsiveContainer>
+              <ChartFigure summary={`Agent-submitted jobs per ${periodLabel(gran).toLowerCase()}: ${agentNames.map((a) => `${a} ${fmtCount(total(periodData, (r) => r[a]))}`).join(", ") || "none"} in total${(() => { const p = peak(periodData, "period", (r) => agentNames.reduce((s, a) => s + (r[a] || 0), 0)); return p ? `; busiest ${p.at} with ${fmtCount(p.value)}` : ""; })()}.`}>
+                <ResponsiveContainer width="100%" height={280}>
+                  <BarChart data={periodData}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="period" tick={{ fontSize: 11 }} />
+                    <YAxis tick={{ fontSize: 11 }} />
+                    <Tooltip />
+                    <Legend />
+                    {agentNames.map((a, i) => (
+                      <Bar key={a} dataKey={a} stackId="jobs" fill={colorFor(a, i)} name={a} />
+                    ))}
+                  </BarChart>
+                </ResponsiveContainer>
+              </ChartFigure>
             </div>
 
             <div className="bg-white rounded-lg shadow border border-black-20 p-4">
               <h3 className="font-semibold text-black-su mb-3">
                 Distinct users per {periodLabel(gran).toLowerCase()}
               </h3>
-              <ResponsiveContainer width="100%" height={280}>
-                <LineChart data={periodData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="period" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
-                  <Tooltip />
-                  <Legend />
-                  {agentNames.map((a, i) => (
-                    <Line
-                      key={a}
-                      type="monotone"
-                      dataKey={`${a}__users`}
-                      stroke={colorFor(a, i)}
-                      name={a}
-                      dot={false}
-                    />
-                  ))}
-                </LineChart>
-              </ResponsiveContainer>
+              <ChartFigure summary={`Distinct users with agent jobs per ${periodLabel(gran).toLowerCase()}: ${agentNames.map((a) => { const p = peak(periodData, "period", (r) => r[`${a}__users`]); return `${a} up to ${p ? fmtCount(p.value) : 0}`; }).join(", ") || "none"}.`}>
+                <ResponsiveContainer width="100%" height={280}>
+                  <LineChart data={periodData}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="period" tick={{ fontSize: 11 }} />
+                    <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                    <Tooltip />
+                    <Legend />
+                    {agentNames.map((a, i) => (
+                      <Line
+                        key={a}
+                        type="monotone"
+                        dataKey={`${a}__users`}
+                        stroke={colorFor(a, i)}
+                        name={a}
+                        dot={false}
+                      />
+                    ))}
+                  </LineChart>
+                </ResponsiveContainer>
+              </ChartFigure>
             </div>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="bg-white rounded-lg shadow border border-black-20 p-4">
               <h3 className="font-semibold text-black-su mb-3">Top users by agent jobs</h3>
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={topUsers} layout="vertical">
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis type="number" tick={{ fontSize: 11 }} />
-                  <YAxis
-                    type="category"
-                    dataKey="User"
-                    width={110}
-                    tick={{ fontSize: 11 }}
-                  />
-                  <Tooltip />
-                  {/* One bar series, coloured per row by that row's agent — `Cell` is how Recharts
-                      varies fill within a series; a nested `Bar` would not render. */}
-                  <Bar dataKey="job_count" name="Jobs">
-                    {topUsers.map((r, i) => (
-                      <Cell key={i} fill={colorFor(r.agent, i)} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+              <ChartFigure summary={`Top users by agent jobs: ${topList(topUsers, (r) => `${r.User} via ${r.agent}`, "job_count", (v) => `${fmtCount(v)} jobs`)}.`}>
+                <ResponsiveContainer width="100%" height={300}>
+                  <BarChart data={topUsers} layout="vertical">
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis type="number" tick={{ fontSize: 11 }} />
+                    <YAxis
+                      type="category"
+                      dataKey="User"
+                      width={110}
+                      tick={{ fontSize: 11 }}
+                    />
+                    <Tooltip />
+                    {/* One bar series, coloured per row by that row's agent — `Cell` is how Recharts
+                        varies fill within a series; a nested `Bar` would not render. */}
+                    <Bar dataKey="job_count" name="Jobs">
+                      {topUsers.map((r, i) => (
+                        <Cell key={i} fill={colorFor(r.agent, agentNames.indexOf(r.agent))} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </ChartFigure>
+              {/* Per-row colour is the only thing saying which agent a bar belongs to, so it needs a
+                  key — Recharts' own Legend would show a single "Jobs" swatch for the one series. */}
+              <ul className="flex flex-wrap gap-4 mt-2 text-xs text-black-su">
+                {[...new Set(topUsers.map((r) => r.agent))].map((a) => (
+                  <li key={a} className="flex items-center gap-1.5">
+                    <span
+                      className="inline-block w-2.5 h-2.5 rounded-sm"
+                      style={{ background: colorFor(a, agentNames.indexOf(a)) }}
+                    />
+                    {a}
+                  </li>
+                ))}
+              </ul>
             </div>
 
             <div className="bg-white rounded-lg shadow border border-black-20 p-4">
               <h3 className="font-semibold text-black-su mb-3">By agent</h3>
               <table className="w-full text-sm">
-                <thead className="bg-black-5 border-b border-black-20">
+                <thead className="bg-fog border-b border-black-20">
                   <tr>
                     <th className="px-3 py-2 text-left font-medium text-black-su">Agent</th>
                     <th className="px-3 py-2 text-right font-medium text-black-su">Jobs</th>
@@ -366,7 +387,7 @@ export default function AgentsDashboard({ cluster, startDate, endDate, node, gro
                       <td className="px-3 py-2">
                         <span
                           className="inline-block w-2 h-2 rounded-full mr-2"
-                          style={{ background: colorFor(r.agent, 0) }}
+                          style={{ background: colorFor(r.agent, agentNames.indexOf(r.agent)) }}
                         />
                         {r.agent}
                       </td>
@@ -382,7 +403,7 @@ export default function AgentsDashboard({ cluster, startDate, endDate, node, gro
                   ))}
                   {agentRows.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="px-3 py-6 text-center text-black-60">
+                      <td colSpan={5} className="px-3 py-6 text-center text-cool-grey">
                         No agent-submitted jobs in this range.
                       </td>
                     </tr>
