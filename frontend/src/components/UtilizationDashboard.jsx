@@ -254,7 +254,7 @@ export default function UtilizationDashboard({ cluster, startDate, endDate, node
             of {fmtInt(s.jobs_in_range)} jobs in this range.{" "}
           </>
         ) : null}
-        Slurm records usage only for finished jobs submitted on or after {since}; running jobs,
+        Slurm records usage only for {cluster.usage?.sinceText}; running jobs,
         jobs that never started, and resized jobs are left out rather than counted as zero.
         {beforeSince && (
           <span className="font-medium text-black-su">

@@ -45,8 +45,7 @@ const USER_COLUMNS = [
     numeric: true,
     feature: "usage",
     title:
-      "Jobs with usage data: finished, submitted on or after 2026-01-22, and not resized. The " +
-      "utilization columns cover only these.",
+      "Jobs with usage data: {since}, and not resized. The utilization columns cover only these.",
   },
   {
     key: "mem_weighted_pct",
@@ -93,7 +92,9 @@ const USER_COLUMNS = [
 
 /** Columns the cluster can actually populate — same idiom as `jobColumnsFor`. */
 function userColumnsFor(cluster) {
-  return USER_COLUMNS.filter((c) => !c.feature || cluster.features[c.feature]);
+  return USER_COLUMNS.filter((c) => !c.feature || cluster.features[c.feature]).map((c) =>
+    c.title ? { ...c, title: c.title.replace("{since}", cluster.usage?.sinceText || "") } : c,
+  );
 }
 
 const numericUserCols = new Set(
