@@ -433,10 +433,11 @@ export const CLUSTERS = {
     /**
      * sacct, like squeue, records every partition a job was eligible for until it is placed.
      * As of 2026-10-10, 1,638 rows carry a comma list, all of them jobs that never started
-     * (1,614 CANCELLED, 24 PENDING). Sorting the tokens makes `normal,owners` and `owners,normal`
-     * one label.
+     * (1,614 CANCELLED, 24 PENDING), and 0 of 511,935 started jobs do. So a list carries no
+     * information about where work ran, and the 57 distinct lists would each show up as a
+     * "partition". They all fold into one label. The jobs stay in every count.
      */
-    partition: { multiValued: true },
+    partition: { multiValued: true, unplacedLabel: "(never placed)" },
 
     nodeList: {
       // "None assigned" for the 6,752 rows that never landed on a node.

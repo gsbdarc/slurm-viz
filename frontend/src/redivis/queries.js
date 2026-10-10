@@ -54,6 +54,10 @@ export function ck(cluster, ...parts) {
 function partitionExprSql(cluster) {
   const col = cols(cluster).partition;
   if (!cluster.partition?.multiValued) return col;
+  // Where a list only ever survives on jobs that never started (sacct: Slurm narrows it to one
+  // partition at placement), every list means the same thing, so they all become one label.
+  const unplaced = cluster.partition.unplacedLabel;
+  if (unplaced) return `IF(STRPOS(${col}, ',') > 0, ${sqlString(unplaced)}, ${col})`;
   return `(SELECT STRING_AGG(TRIM(p), ',' ORDER BY TRIM(p)) FROM UNNEST(SPLIT(${col}, ',')) AS p)`;
 }
 
