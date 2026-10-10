@@ -899,6 +899,7 @@ export async function getClusterUtilization(cluster, start, end, filters = {}) {
            ${partitionRef(cluster)} AS \`Partition\`,
            COUNT(*) AS job_count,
            SUM(${c.ncpus}) AS total_cpus,
+           SUM(CAST(${c.ncpus} AS FLOAT64) * ${cluster.elapsedSecondsSql}) / 3600 AS cpu_hours,
            AVG(${c.ncpus}) AS avg_cpus_per_job,
            AVG(\`_mem_gb\`) AS avg_mem_gb,
            AVG(${cluster.elapsedSecondsSql}) AS avg_elapsed_seconds,

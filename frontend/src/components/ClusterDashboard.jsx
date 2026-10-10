@@ -13,7 +13,6 @@ import {
   PieChart,
   Pie,
   Cell,
-  LabelList,
 } from "recharts";
 import ChartFigure, { fmtCount, topList, peak, sumOf } from "./ChartFigure";
 
@@ -88,6 +87,32 @@ export default function ClusterDashboard({ cluster, startDate, endDate, node, gr
 
   const cpuData = data.cpu_by_partition || [];
 
+  // CPU-hours, not a sum of CPU counts: a 1-minute and a 3-day 16-core job are not the same usage.
+  // Sorted biggest first, and partitions with no CPU-hours are left off the chart. Those are jobs
+  // that never started, whose allocation is 0 (on Sherlock, every partition list is one). Display
+  // only: the table below still lists every partition.
+  const CPU_BARS = 10;
+  const cpuBars = (() => {
+    const used = cpuData
+      .filter((r) => Number(r.cpu_hours) > 0)
+      .map((r) => ({ ...r, cpu_hours: Number(r.cpu_hours) }))
+      .sort((a, b) => b.cpu_hours - a.cpu_hours);
+    if (used.length <= CPU_BARS + 1) return used;
+    const tail = used.slice(CPU_BARS);
+    const jobs = tail.reduce((n, r) => n + Number(r.job_count || 0), 0);
+    const cpus = tail.reduce((n, r) => n + Number(r.total_cpus || 0), 0);
+    return [
+      ...used.slice(0, CPU_BARS),
+      {
+        Partition: `(other — ${tail.length})`,
+        cpu_hours: tail.reduce((n, r) => n + r.cpu_hours, 0),
+        job_count: jobs,
+        avg_cpus_per_job: jobs ? cpus / jobs : null,
+      },
+    ];
+  })();
+  const cpuHoursLabel = cluster.sampling ? "Observed CPU-Hours" : "CPU-Hours";
+
   // A node filter narrows this tab to one machine, which usually leaves a single partition. A
   // one-slice pie and a lone bar convey nothing the table below doesn't state more precisely, so
   // the "by Partition" charts are only worth drawing when there's something to compare.
@@ -157,26 +182,25 @@ export default function ClusterDashboard({ cluster, startDate, endDate, node, gr
           </div>
         )}
 
-        {showPartitionCharts && cpuData.length > 0 && (
+        {showPartitionCharts && cpuBars.length > 0 && (
           <div className="bg-white rounded-lg shadow border border-black-20 p-4">
-            <h3 className="text-lg font-semibold text-black-su mb-3">
-              CPU Usage by Partition
-            </h3>
-            <ChartFigure summary={`Total CPUs requested by partition: ${topList(cpuData, "Partition", "total_cpus", (v) => `${fmtCount(v)} CPUs`, 4)}.`}>
+            <h3 className="text-lg font-semibold text-black-su mb-3">{cpuHoursLabel} by Partition</h3>
+            <ChartFigure summary={`${cpuHoursLabel} by partition: ${topList(cpuBars, "Partition", "cpu_hours", (v) => `${fmtCount(Math.round(v))} CPU-hours`, 4)}.`}>
               <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={cpuData} margin={{ top: 20 }}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="Partition" />
-                  <YAxis />
-                  <Tooltip formatter={(v, name) => [typeof v === "number" ? (v % 1 === 0 ? v.toLocaleString() : v.toFixed(1)) : v, name]} />
-                  <Bar isAnimationActive={false} dataKey="total_cpus" fill="#175E54" name="Total CPUs">
-                    <LabelList
-                      dataKey="avg_cpus_per_job"
-                      position="top"
-                      formatter={(v) => `${typeof v === "number" ? v.toFixed(1) : v} avg CPUs`}
-                      style={{ fontSize: 11, fill: "#585754" }}
-                    />
-                  </Bar>
+                <BarChart data={cpuBars} layout="vertical" margin={{ left: 8, right: 16 }}>
+                  <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                  <XAxis type="number" tickFormatter={(v) => fmtCount(v)} />
+                  <YAxis type="category" dataKey="Partition" width={130} interval={0} tick={{ fontSize: 12 }} />
+                  <Tooltip
+                    formatter={(v) => [`${Math.round(v).toLocaleString()}`, cpuHoursLabel]}
+                    labelFormatter={(label, payload) => {
+                      const r = payload?.[0]?.payload;
+                      if (!r) return label;
+                      const avg = r.avg_cpus_per_job != null ? `, ${Number(r.avg_cpus_per_job).toFixed(1)} avg CPUs` : "";
+                      return `${label} (${Number(r.job_count || 0).toLocaleString()} jobs${avg})`;
+                    }}
+                  />
+                  <Bar isAnimationActive={false} dataKey="cpu_hours" fill="#175E54" name={cpuHoursLabel} />
                 </BarChart>
               </ResponsiveContainer>
             </ChartFigure>
@@ -195,6 +219,7 @@ export default function ClusterDashboard({ cluster, startDate, endDate, node, gr
                 <th className="px-4 py-2 font-medium text-black-su">Partition</th>
                 <th className="px-4 py-2 font-medium text-black-su">Job Count</th>
                 <th className="px-4 py-2 font-medium text-black-su">Total CPUs</th>
+                <th className="px-4 py-2 font-medium text-black-su">{cpuHoursLabel}</th>
                 <th className="px-4 py-2 font-medium text-black-su">Avg CPUs/Job</th>
                 {showMemory && (
                   <th className="px-4 py-2 font-medium text-black-su">Avg RAM/Job</th>
@@ -216,6 +241,9 @@ export default function ClusterDashboard({ cluster, startDate, endDate, node, gr
                   </td>
                   <td className="px-4 py-2">
                     {row.total_cpus?.toLocaleString()}
+                  </td>
+                  <td className="px-4 py-2">
+                    {row.cpu_hours != null ? Math.round(row.cpu_hours).toLocaleString() : "—"}
                   </td>
                   <td className="px-4 py-2">
                     {row.avg_cpus_per_job?.toFixed(1)}

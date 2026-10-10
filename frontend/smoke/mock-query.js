@@ -49,7 +49,7 @@ export const DATA = {
   },
   cluster: {
     cpu_by_partition: [{
-      Partition: "normal", job_count: 100, total_cpus: 400, avg_cpus_per_job: 4, avg_mem_gb: 16,
+      Partition: "normal", job_count: 100, total_cpus: 400, cpu_hours: 400, avg_cpus_per_job: 4, avg_mem_gb: 16,
       avg_elapsed_seconds: 3600, avg_wait_seconds: 60, ec2_cost_usd: 30,
     }],
     partitions: { normal: 100, gpu: 20 },
