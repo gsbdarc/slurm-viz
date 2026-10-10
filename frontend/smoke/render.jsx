@@ -33,7 +33,7 @@ export function run() {
     for (const { name, Tab, feature } of TABS) {
       if (feature && !cluster.features[feature]) continue;
       runs++;
-      const label = `${cluster.id.padEnd(9)} ${name.padEnd(13)}`;
+      const label = `${cluster.id.padEnd(15)} ${name.padEnd(13)}`;
       try {
         const html = renderToString(
           <Tab cluster={cluster} startDate="2026-08-23" endDate="2026-09-22" node="" group="" />,

@@ -5,10 +5,12 @@
  * (`redivis/queries.js`, the dashboards) reads the table name, the column mapping, the dedup keys,
  * and the feature flags from this file rather than hardcoding sacct's vocabulary.
  *
- * The two clusters we have are not the same *kind* of data, which is why `features` exists:
+ * The clusters are not all the same *kind* of data, which is why `features` exists:
  *
- *   Yen      `yen_sacct_dump`       sacct    job accounting — terminal states, authoritative runtime
- *   Sherlock `sherlock_squeue_dump` squeue   hourly snapshots of the live queue — neither of those
+ *   Yen              `yen_sacct_dump`       sacct    job accounting: terminal states, real runtimes
+ *   Sherlock         `sherlock_sacct_dump`  sacct    the same, from 2026-10-09 (#14)
+ *   Sherlock (squeue) `sherlock_squeue_dump` squeue  hourly snapshots of the live queue: neither of
+ *                                                    those. Kept only while the two run side by side.
  *
  * A squeue snapshot can only ever see a job while it is still queued or running, so Sherlock's
  * runtimes are lower bounds and its jobs are never observed in a terminal state. Rather than let
@@ -189,6 +191,9 @@ export const CLUSTERS = {
     usage: {
       presentSql: "`MaxRSSBytes` IS NOT NULL",
       since: "2026-01-22",
+      // The cutoff in words, for the shared tooltips and the Utilization note.
+      sinceText: "finished jobs submitted on or after 2026-01-22",
+      beforeText: "anything submitted before 2026-01-22",
       memUsedBytesSql: "`MaxRSSBytes`",
       memReqBytesSql: "`ReqMemBytes`",
       cpuSecondsSql: YEN_CPU_SECONDS,
@@ -315,6 +320,149 @@ export const CLUSTERS = {
     id: "sherlock",
     label: "Sherlock",
     title: "Sherlock Slurm Statistics (GSB)",
+
+    organization: "StanfordGSBSandbox",
+    dataset: "slurm_stats",
+    // Written by the same pipeline as the Yen's (gsbdarc/slurm-stats-yens, `sherlock` config):
+    // nightly since 2026-10-09, backfilled to 2025-12-24.
+    table: "sherlock_sacct_dump",
+
+    // The Yen's sacct names, plus the one column that differs in meaning.
+    columns: {
+      jobId: "JobID",
+      jobName: "JobName",
+      user: "User",
+      partition: "Partition",
+      state: "State",
+      ncpus: "NCPUS",
+      reqMem: "ReqMem",
+      elapsed: "ElapsedRaw",
+      submit: "Submit",
+      start: "Start",
+      end: "End",
+      nodeList: "NodeList",
+      workDir: "WorkDir",
+      submitLine: "SubmitLine",
+      // The Slurm account a job was charged to: on Sherlock, the PI group. Unlike squeue's unix
+      // `Group`, it is not strictly a function of user. As of 2026-10-10, 4 of 119 users charged
+      // two accounts (10,594 of 518,686 rows). The Groups tab is exact. The Users tab shows one
+      // account per user (`MAX`), so those 4 are listed under one of their two.
+      group: "Account",
+    },
+
+    /**
+     * Same keys and ordering as the Yen, for the same reasons: a job that spans midnight is
+     * pulled on each day it ran, and the last, most complete row has to win deterministically.
+     * Sherlock's JobID counter has never been reset, but `Submit` costs nothing. Verified
+     * 2026-10-10: 518,686 rows give 438,945 distinct (JobID, Submit), exactly the distinct
+     * (JobID, DBIndex) count.
+     */
+    dedup: {
+      partition: "`JobID`, `Submit`",
+      order:
+        "`End` DESC NULLS LAST, `ElapsedRaw` DESC NULLS LAST, " +
+        "`Start` DESC NULLS LAST, `MaxRSSBytes` IS NULL, " +
+        `${YEN_CPU_SECONDS} DESC NULLS LAST, \`MaxRSSBytes\` DESC, ` +
+        "`SnapshotDate` DESC NULLS LAST, TO_JSON_STRING(t)",
+    },
+
+    elapsedSecondsSql: "`ElapsedRaw`",
+
+    /**
+     * No EC2 cost: Sherlock is not billed by the hour, so the Yen's EC2-equivalent figure would
+     * answer a question nobody is asking here.
+     */
+    features: {
+      ec2Cost: false,
+      nodeFilter: true,
+      jobStates: true,
+      waitTimes: true,
+      memory: true,
+      gpus: true,
+      groups: true,
+      agentDetection: true,
+      usage: true,
+    },
+
+    /**
+     * Same columns and rules as the Yen (see there). What differs is the cutoff.
+     *
+     * Sherlock purges a job's *steps* on schedule at 6 months, but purges the job records
+     * themselves late. Usage lives only on step rows, so the backfill (pulled 2026-10-09) has
+     * states and runtimes back to 2025-12-24, but usage only for jobs that **finished** on or after
+     * 2026-04-01: 0 of 2,213 jobs ending Mar 25–31, and 475 of 488 ending Apr 1. The cutoff is set
+     * by end date, not submit date, so the wording says "finished".
+     *
+     * `gpuModels` is empty until the node → GPU-memory map is built from `sinfo -o "%N %f"` on
+     * Sherlock. Until then, GPU memory % is hidden. GPU peak utilization needs no map and is shown.
+     */
+    usage: {
+      presentSql: "`MaxRSSBytes` IS NOT NULL",
+      since: "2026-04-01",
+      sinceText: "jobs that finished on or after 2026-04-01",
+      beforeText: "anything that finished before 2026-04-01",
+      memUsedBytesSql: "`MaxRSSBytes`",
+      memReqBytesSql: "`ReqMemBytes`",
+      cpuSecondsSql: YEN_CPU_SECONDS,
+      // No RESIZING jobs on Sherlock as of 2026-10-10, but the guard costs nothing if one appears.
+      // Sherlock's longest jobs run 7 days, the same as the Yen's `long` partition.
+      resized: { state: "RESIZING", withinDays: 7 },
+      cpuMaxPct: 105,
+      gpuUtilSql: "`GPUUtil`",
+      gpuMemBytesSql: "`GPUMemBytes`",
+      gpuMinSeconds: 30,
+      gpuModels: [],
+    },
+
+    /**
+     * The Yen's markers, unchanged: they are paths the agents create, not anything site-specific.
+     * 3,831 Claude Code and 2 Codex jobs in the table as of 2026-10-10.
+     */
+    agentDetection: {
+      columns: ["workDir", "submitLine"],
+      agents: [
+        { label: "claude-code", pattern: "(/tmp/claude-[0-9]+/|[.]claude/)" },
+        { label: "codex", pattern: "(/tmp/codex|[.]codex/)" },
+      ],
+    },
+
+    memory: { kind: "sacctReqMem" },
+
+    tresColumnCandidates: ["AllocTRES", "ReqTRES", "ReqGRES"],
+
+    /**
+     * sacct, like squeue, records every partition a job was eligible for until it is placed.
+     * As of 2026-10-10, 1,638 rows carry a comma list, all of them jobs that never started
+     * (1,614 CANCELLED, 24 PENDING). Sorting the tokens makes `normal,owners` and `owners,normal`
+     * one label.
+     */
+    partition: { multiValued: true },
+
+    nodeList: {
+      // "None assigned" for the 6,752 rows that never landed on a node.
+      rejectValuePattern: "^None",
+      rejectNamePattern: "^\\s*$|^None",
+      namePattern: "^sh[0-9]",
+      maxTokens: 20000,
+    },
+
+    caveat:
+      "Sherlock data comes from Slurm job accounting (sacct) and covers GSB work: members of " +
+      "sh_s-gsb, anyone with Yen access, and jobs charged to GSB PI accounts. Groups are Slurm " +
+      "accounts. History starts 2025-12-24, because Sherlock keeps about six months. Memory, CPU " +
+      "and GPU usage start with jobs that finished on or after 2026-04-01. Jobs cancelled before " +
+      "they ever became eligible to run are not recorded. They used no resources.",
+  },
+
+  /**
+   * TEMPORARY (#14): the squeue-based Sherlock view, kept reachable while it and the sacct view
+   * run side by side, so the two can be compared. Remove this entry when the squeue collector is
+   * retired.
+   */
+  "sherlock-squeue": {
+    id: "sherlock-squeue",
+    label: "Sherlock (squeue)",
+    title: "Sherlock Slurm Statistics (GSB, squeue snapshots)",
 
     organization: "StanfordGSBSandbox",
     dataset: "slurm_stats",
@@ -447,7 +595,8 @@ export const CLUSTERS = {
     },
 
     caveat:
-      "Sherlock data comes from hourly snapshots of the live queue (squeue), not job accounting. " +
+      "Legacy view, kept for comparison while it is retired: use \"Sherlock\" instead. " +
+      "This data comes from hourly snapshots of the live queue (squeue), not job accounting. " +
       "A job that is submitted, runs and finishes between two snapshots is never recorded at all, " +
       "so what you see is biased toward long-waiting and long-running jobs: counts understate " +
       "throughput, while average runtimes and waits overstate it. Runtimes are the last value " +
