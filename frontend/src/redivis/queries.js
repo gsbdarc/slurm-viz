@@ -1174,19 +1174,38 @@ export async function getUsersByPeriod(cluster, start, end, filters = {}) {
   const [gran, expr] = granularity(cluster, start, end);
   const key = ck(cluster, "users_period", start, end, filterKey(filters));
 
+  // Each user is counted ONCE per period, under the segment where they used the most CPU-hours
+  // (ties: more jobs, then name), so the stacked bar's height is the true count of unique users.
+  // Segment by group where the cluster has one (Sherlock: Account), else by partition. Counting a
+  // user in every segment they touched double-counts anyone who submits to two partitions.
+  const byGroup = Boolean(c.group);
+  const segment = byGroup
+    ? `IFNULL(CAST(${c.group} AS STRING), '(no group recorded)')`
+    : partitionRef(cluster);
+
   const rows = await runQuery(
     cluster,
-    `WITH ${plainCte(cluster)}
-     SELECT
-         ${expr} AS period,
-         ${partitionRef(cluster)} AS \`Partition\`,
-         COUNT(DISTINCT ${c.user}) AS unique_users
-     FROM jobs WHERE ${where}
-     GROUP BY period, ${partitionRef(cluster)} ORDER BY period`,
+    `WITH ${plainCte(cluster)},
+     per_user AS (
+         SELECT ${expr} AS period, ${c.user} AS u, ${segment} AS segment,
+                SUM(CAST(IFNULL(${c.ncpus}, 0) AS FLOAT64) * IFNULL(${cluster.elapsedSecondsSql}, 0)) AS cpu_s,
+                COUNT(*) AS n
+         FROM jobs WHERE ${where}
+         GROUP BY period, u, segment
+     ),
+     main AS (
+         SELECT period, segment, ROW_NUMBER() OVER (
+             PARTITION BY period, u ORDER BY cpu_s DESC, n DESC, segment
+         ) AS rn
+         FROM per_user
+     )
+     SELECT period, segment AS \`Segment\`, COUNT(*) AS unique_users
+     FROM main WHERE rn = 1
+     GROUP BY period, segment ORDER BY period`,
     key,
   );
 
-  return { granularity: gran, data: rows };
+  return { granularity: gran, dimension: byGroup ? "group" : "partition", data: rows };
 }
 
 /**

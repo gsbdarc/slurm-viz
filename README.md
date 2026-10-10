@@ -124,7 +124,20 @@ runtimes, and memory, CPU and GPU usage. What differs:
   held, or blocked on a dependency that never cleared. A date-range `sacct` never returns them. They
   were 2–7% of the jobs squeue saw each month, and they used no resources. The Yen has the same
   blind spot.
+- **Partition lists show up as "(never placed)".** Until a job starts, Slurm records every partition
+  it was eligible for (`gsb,maggiori,normal`), and a job cancelled before it started keeps that list
+  for good. No started job carries a list (0 of 511,935), so the 57 distinct lists are folded into
+  one label instead of each appearing as a partition. The jobs still count everywhere.
 - **No EC2 cost**, as above.
+
+### Unique users over time
+
+The Users tab's weekly (or daily or monthly) chart counts each user **once per period**, under the
+segment where they used the most CPU-hours. Ties go to the segment with more jobs, then to
+alphabetical order. The segment is the group on Sherlock and the partition on the Yen. So a bar's
+height is that period's true count of unique users. The old chart counted a user in every partition
+they touched: on Sherlock its stacks reached 85–110 a week, against 31–36 actual users. The top 8
+segments are shown, and the rest are grouped into "Other".
 
 ### Groups (Sherlock only)
 

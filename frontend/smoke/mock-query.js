@@ -74,9 +74,10 @@ export const DATA = {
   groups: [{ Group: "g1", job_count: 120, user_count: 2, total_cpus: 420, cpu_hours: 402, total_wait_hours: 1 }],
   usersPeriod: {
     granularity: "month",
+    dimension: "partition",
     data: [
-      { period: day, Partition: "normal", unique_users: 2 },
-      { period: day, Partition: "gpu", unique_users: 1 },
+      { period: day, Segment: "normal", unique_users: 2 },
+      { period: day, Segment: "gpu", unique_users: 1 },
     ],
   },
   agentSummaries: [
