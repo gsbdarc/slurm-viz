@@ -194,6 +194,8 @@ export const CLUSTERS = {
       // The cutoff in words, for the shared tooltips and the Utilization note.
       sinceText: "finished jobs submitted on or after 2026-01-22",
       beforeText: "anything submitted before 2026-01-22",
+      // Which date the cutoff is on, for the Utilization note: Yen gates on submit, Sherlock on end.
+      sinceBasis: "were submitted",
       memUsedBytesSql: "`MaxRSSBytes`",
       memReqBytesSql: "`ReqMemBytes`",
       cpuSecondsSql: YEN_CPU_SECONDS,
@@ -401,6 +403,7 @@ export const CLUSTERS = {
       since: "2026-04-01",
       sinceText: "jobs that finished on or after 2026-04-01",
       beforeText: "anything that finished before 2026-04-01",
+      sinceBasis: "finished",
       memUsedBytesSql: "`MaxRSSBytes`",
       memReqBytesSql: "`ReqMemBytes`",
       cpuSecondsSql: YEN_CPU_SECONDS,

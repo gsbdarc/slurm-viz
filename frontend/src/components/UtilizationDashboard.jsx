@@ -258,7 +258,8 @@ export default function UtilizationDashboard({ cluster, startDate, endDate, node
         jobs that never started, and resized jobs are left out rather than counted as zero.
         {beforeSince && (
           <span className="font-medium text-black-su">
-            {" "}This range starts before {since}, so its earlier jobs are not included.
+            {" "}This range starts before {since}, so jobs that {cluster.usage.sinceBasis} before then
+            are not included.
           </span>
         )}{" "}
         <span className="text-cool-grey">
