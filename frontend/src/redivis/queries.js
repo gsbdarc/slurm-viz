@@ -54,6 +54,10 @@ export function ck(cluster, ...parts) {
 function partitionExprSql(cluster) {
   const col = cols(cluster).partition;
   if (!cluster.partition?.multiValued) return col;
+  // Where a list only ever survives on jobs that never started (sacct: Slurm narrows it to one
+  // partition at placement), every list means the same thing, so they all become one label.
+  const unplaced = cluster.partition.unplacedLabel;
+  if (unplaced) return `IF(STRPOS(${col}, ',') > 0, ${sqlString(unplaced)}, ${col})`;
   return `(SELECT STRING_AGG(TRIM(p), ',' ORDER BY TRIM(p)) FROM UNNEST(SPLIT(${col}, ',')) AS p)`;
 }
 
@@ -899,6 +903,7 @@ export async function getClusterUtilization(cluster, start, end, filters = {}) {
            ${partitionRef(cluster)} AS \`Partition\`,
            COUNT(*) AS job_count,
            SUM(${c.ncpus}) AS total_cpus,
+           SUM(CAST(${c.ncpus} AS FLOAT64) * ${cluster.elapsedSecondsSql}) / 3600 AS cpu_hours,
            AVG(${c.ncpus}) AS avg_cpus_per_job,
            AVG(\`_mem_gb\`) AS avg_mem_gb,
            AVG(${cluster.elapsedSecondsSql}) AS avg_elapsed_seconds,
@@ -1169,19 +1174,38 @@ export async function getUsersByPeriod(cluster, start, end, filters = {}) {
   const [gran, expr] = granularity(cluster, start, end);
   const key = ck(cluster, "users_period", start, end, filterKey(filters));
 
+  // Each user is counted ONCE per period, under the segment where they used the most CPU-hours
+  // (ties: more jobs, then name), so the stacked bar's height is the true count of unique users.
+  // Segment by group where the cluster has one (Sherlock: Account), else by partition. Counting a
+  // user in every segment they touched double-counts anyone who submits to two partitions.
+  const byGroup = Boolean(c.group);
+  const segment = byGroup
+    ? `IFNULL(CAST(${c.group} AS STRING), '(no group recorded)')`
+    : partitionRef(cluster);
+
   const rows = await runQuery(
     cluster,
-    `WITH ${plainCte(cluster)}
-     SELECT
-         ${expr} AS period,
-         ${partitionRef(cluster)} AS \`Partition\`,
-         COUNT(DISTINCT ${c.user}) AS unique_users
-     FROM jobs WHERE ${where}
-     GROUP BY period, ${partitionRef(cluster)} ORDER BY period`,
+    `WITH ${plainCte(cluster)},
+     per_user AS (
+         SELECT ${expr} AS period, ${c.user} AS u, ${segment} AS segment,
+                SUM(CAST(IFNULL(${c.ncpus}, 0) AS FLOAT64) * IFNULL(${cluster.elapsedSecondsSql}, 0)) AS cpu_s,
+                COUNT(*) AS n
+         FROM jobs WHERE ${where}
+         GROUP BY period, u, segment
+     ),
+     main AS (
+         SELECT period, segment, ROW_NUMBER() OVER (
+             PARTITION BY period, u ORDER BY cpu_s DESC, n DESC, segment
+         ) AS rn
+         FROM per_user
+     )
+     SELECT period, segment AS \`Segment\`, COUNT(*) AS unique_users
+     FROM main WHERE rn = 1
+     GROUP BY period, segment ORDER BY period`,
     key,
   );
 
-  return { granularity: gran, data: rows };
+  return { granularity: gran, dimension: byGroup ? "group" : "partition", data: rows };
 }
 
 /**

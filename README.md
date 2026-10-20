@@ -25,8 +25,9 @@ should mean adding an entry there and nothing else.
 
 ## EC2 cost estimates
 
-Shown for **Yen only.** The model bills a job's real elapsed time, which Sherlock's queue snapshots
-cannot supply; see "What Sherlock does not support" below.
+Shown for **Yen only.** Sherlock isn't billed by the hour, so an EC2-equivalent figure would answer a
+question nobody is asking there. (The legacy squeue view couldn't have shown one anyway: it has no
+real elapsed times.)
 
 Costs are an **estimate for comparison, not a quote.** Each job is matched to the cheapest instance
 in a hardcoded catalog (`c6i` / `m6i` / `r6i` / `x2idn` / `g5` / `p4d` / `p5`) that satisfies its
@@ -68,7 +69,7 @@ npx gh-pages -d dist
 ```
 
 **Don't skip `npm run smoke`.** A clean build only proves the code compiles; it never runs a
-page. The smoke test renders every tab on both clusters with made-up data, no Redivis login needed,
+page. The smoke test renders every tab on every cluster with made-up data, no Redivis login needed,
 and exits non-zero if any of them crashes. It exists because on 2026-09-22 a clean build took the
 live site down until #12. If it fails, don't deploy.
 
@@ -77,92 +78,106 @@ add it to `smoke/render.jsx` or `smoke/mock-query.js`; the test fails on a query
 
 ## Data sources
 
-Both tables live in
+All tables live in
 [`StanfordGSBSandbox/slurm_stats`](https://redivis.com/StanfordGSBSandbox/datasets/slurm_stats) on
 Redivis.
 
-| | Yen (`yen_sacct_dump`) | Sherlock (`sherlock_squeue_dump`) |
-|---|---|---|
-| Source | `sacct` — job *accounting* | `squeue` — hourly snapshot of the *live queue* |
-| Rows per job | many snapshots | many snapshots |
-| Terminal states | `COMPLETED` / `FAILED` / `TIMEOUT` … | **never observed** |
-| Elapsed time | `ElapsedRaw`, final and authoritative | last-seen runtime — a **lower bound** |
-| Scope | whole cluster | the `sh_s-gsb` group only |
-| PI group | not recorded | `Group`, a clean hierarchy over users |
+| | Yen (`yen_sacct_dump`) | Sherlock (`sherlock_sacct_dump`) | Sherlock (squeue), legacy (`sherlock_squeue_dump`) |
+|---|---|---|---|
+| Source | `sacct`, job *accounting* | `sacct`, job *accounting* | `squeue`, hourly snapshot of the *live queue* |
+| Rows per job | one per daily pull it overlaps | one per daily pull it overlaps | one per hourly snapshot |
+| Terminal states | `COMPLETED` / `FAILED` / `TIMEOUT` … | the same | **never observed** |
+| Elapsed time | `ElapsedRaw`, final | `ElapsedRaw`, final | last-seen runtime, a **lower bound** |
+| Usage (memory, CPU, GPU) | jobs submitted from 2026-01-22 | jobs finished from 2026-04-01 | none |
+| History from | 2024-08 | 2025-12-24 | 2025-06 |
+| Scope | whole cluster | GSB work (see below) | the `sh_s-gsb` group only |
+| PI group | not recorded | `Account` | `Group` |
 
-Both dumps record a job many times, so every query first collapses them to one row per job with a
-`ROW_NUMBER()` CTE. The partition and ordering keys differ per cluster and carry their reasoning in
-`clusters.js`; both end in `TO_JSON_STRING(t)` to force a **total order**, without which
-`ROW_NUMBER` breaks ties arbitrarily and a job's reported runtime changes between identical queries.
+Every dump records a job more than once, so every query first collapses it to one row per job
+with a `ROW_NUMBER()` CTE. The partition and ordering keys differ per cluster and carry their
+reasoning in `clusters.js`. All of them end in `TO_JSON_STRING(t)` to force a **total order**:
+without it, `ROW_NUMBER` breaks ties arbitrarily and a job's reported runtime changes between
+identical queries.
 
-### What Sherlock does not support, and why
+### Sherlock
 
-`squeue` only ever sees a job while it is still queued or running — a job leaves the queue the
-moment it ends. Everything below follows from that, so Sherlock deliberately shows a reduced
-dashboard rather than a broken imitation of the Yen one:
+Since 2026-10-10 ([#14](https://github.com/gsbdarc/slurm-viz/issues/14)), the Sherlock view reads
+`sherlock_sacct_dump`. The Yen's sacct pipeline
+([gsbdarc/slurm-stats-yens](https://github.com/gsbdarc/slurm-stats-yens)) writes it nightly at 17:30
+from Sherlock's scrontab, so the Sherlock view works like the Yen's: real end states, final
+runtimes, and memory, CPU and GPU usage. What differs:
 
-- **No EC2 cost.** That model bills real elapsed time. The last runtime observed before a job left
-  the queue understates every long job, with no way to say by how much.
-- **No job state at all.** Only `RUNNING`, `PENDING`, `COMPLETING` and `CONFIGURING` are ever
-  recorded, so a state breakdown describes when the snapshot fired rather than how the work went.
-  The state tiles, the "Jobs by State" chart, the state filter and the per-job State column are all
-  hidden here rather than inviting a comparison that cannot be made.
-- **Every statistic is survivorship-biased.** This is the big one. The collector runs *hourly*, so a
-  job submitted, run and finished between two snapshots is never recorded at all. What survives into
-  the data skews toward jobs that waited or ran long enough to be caught: counts understate
-  throughput, while average runtimes and waits overstate it. The caveat banner quantifies this for
-  whatever range and filters are on screen — over the last 30 days, 62% of jobs were seen in only one
-  snapshot and 25% were never observed running.
+- **Scope is GSB work, not the whole cluster.** A job is included if its user is in `sh_s-gsb`, if
+  its user has Yen access, or if it was charged to one of 13 GSB PI accounts. Because the rule
+  about Yen access is literal, every Sherlock job by someone who can log in to the Yens is in,
+  whatever account it was charged to. Filter by group to see one PI's work.
+- **History starts 2025-12-24.** Sherlock keeps about six months of job records. Everything earlier
+  was already purged when the backfill ran on 2026-10-09.
+- **Usage starts with jobs that finished on or after 2026-04-01.** Sherlock purges job *steps*, which
+  carry the usage figures, on schedule at six months, while the job records themselves are purged
+  late. Earlier jobs have states and runtimes but blank usage columns. Blank means unknown, not
+  zero.
+- **No GPU memory %, for now.** That needs each node's GPU memory as the denominator, and the
+  node-to-model map for Sherlock hasn't been built yet (`sinfo -o "%N %f"`). GPU counts and peak GPU
+  utilization are shown.
+- **Jobs cancelled before they ever became eligible are not recorded.** These are jobs that were
+  held, or blocked on a dependency that never cleared. A date-range `sacct` never returns them. They
+  were 2–7% of the jobs squeue saw each month, and they used no resources. The Yen has the same
+  blind spot.
+- **Partition lists show up as "(never placed)".** Until a job starts, Slurm records every partition
+  it was eligible for (`gsb,maggiori,normal`), and a job cancelled before it started keeps that list
+  for good. No started job carries a list (0 of 511,935), so the 57 distinct lists are folded into
+  one label instead of each appearing as a partition. The jobs still count everywhere.
+- **No EC2 cost**, as above.
 
-  The hourly figure is measured, not assumed. There is no snapshot timestamp column, but for a job
-  seen repeatedly the gaps between consecutive observed runtimes *are* the sampling interval: the
-  median is exactly 3600 s, with 425,186 gaps near 60 minutes against 150 near 30.
-- **A queued job's partition is a list, not a value.** squeue names every partition the job is
-  eligible for, so `Partition` can read `gsb,maggiori,normal,owners`; it resolves to one only once
-  the job is placed. Verified as a queued-job artifact: 8,100 `PENDING` and 65 `COMPLETING` jobs
-  carry a list, and no `RUNNING` or `CONFIGURING` job does. The dashboard sorts the tokens so
-  `athey,normal` and `normal,athey` stop being two labels for one request, which takes 42 distinct
-  values down to 28. Note the filter is still an exact match on that canonical value, so filtering
-  `gsb` does **not** match the queued job that asked for `gsb,normal`.
-- **Runtimes are lower bounds.** `TimeUsed` is the last value seen, in `MM:SS` / `HH:MM:SS` /
-  `D-HH:MM:SS` form. There is no snapshot timestamp column, so "the latest snapshot" is expressed as
-  "the largest observed runtime" — ordered on the *parsed* seconds, since lexically `9:00` would
-  outrank `10:00:00`.
-- **No GPU counts.** The dump carries no TRES/GRES column at all.
-- **No end time.** `EndTime` exists but is always the scheduler's estimate, since no finished job is
-  ever seen; one pending job carries 6,539 different values as the estimate churns. It is not shown.
-- **Queue waits exclude pending jobs**, whose `StartTime` is a forecast rather than a fact.
-- **CPU and memory are missing before December 2025** — see
-  [issue #6](https://github.com/gsbdarc/slurm-viz/issues/6).
+### Unique users over time
+
+The Users tab's weekly (or daily or monthly) chart counts each user **once per period**, under the
+segment where they used the most CPU-hours. Ties go to the segment with more jobs, then to
+alphabetical order. The segment is the group on Sherlock and the partition on the Yen. So a bar's
+height is that period's true count of unique users. The old chart counted a user in every partition
+they touched: on Sherlock its stacks reached 85–110 a week, against 31–36 actual users. The top 8
+segments are shown, and the rest are grouped into "Other".
 
 ### Groups (Sherlock only)
 
-Sherlock work is organised by PI group, so the dump's `Group` column gets a tab of its own and a
-filter in the shared bar that narrows every other tab.
+On Sherlock the PI group is the Slurm `Account` a job was charged to. It gets a tab of its own,
+and a filter in the shared bar that narrows every other tab. September 2026 had 24 accounts: the
+13 GSB PI accounts, plus others that Yen users charged.
 
-Group is a clean hierarchy over users — 23 groups across 91 users, and no user has ever appeared
-under two — so aggregating by group is unambiguous, and each user's group can be shown on the Users
-tab without a second grouping key. It matches `Account` except for 135 jobs.
+`Account` is not strictly a function of user. As of 2026-10-10, 4 of 119 users had charged two
+accounts (10,594 of 518,686 rows). The Groups tab is exact, because it groups by account. The Users
+tab shows one account per user, so those 4 appear under one of their two.
 
-Jobs with no group recorded are kept in the table as `(no group recorded)`, so its totals still
-reconcile against the summary cards, but are left out of the charts: on a range reaching back before
-December 2025 that bucket is around 41% of jobs and would be the tallest bar while telling you
-nothing about any group. See [issue #6](https://github.com/gsbdarc/slurm-viz/issues/6).
+The Yen's dump has no usable group (`Account` and `Group` are constant there), so the tab and the
+filter don't appear on the Yen.
 
-Yen's sacct dump has no group column, so the tab and the filter do not appear there.
+### The legacy squeue view (being retired)
 
-### Sherlock collection pipeline
+`Sherlock (squeue)` in the toggle is the old view, backed by `sherlock_squeue_dump`. It stays only
+while the two pipelines run side by side, so they can be compared. Remove its entry from
+`clusters.js` when the squeue collector is retired. Its limits all follow from one fact: `squeue`
+only sees a job while it is still queued or running.
 
-Recorded here so the provenance lives with the code:
+- **Every statistic is survivorship-biased.** The collector runs hourly, so a job submitted, run and
+  finished between two snapshots is never recorded. In September 2026 it saw 18,792 jobs, where
+  sacct counted 67,186 (sacct's scope is also wider). The caveat banner quantifies the bias for
+  whatever is on screen.
+- **No job states, no end time, no usage, no GPU counts, no EC2 cost.** Only `RUNNING`, `PENDING`,
+  `COMPLETING` and `CONFIGURING` are ever observed. `EndTime` is always the scheduler's estimate.
+  The dump has no TRES column.
+- **Runtimes are lower bounds**: `TimeUsed` is the last value seen, ordered on the parsed seconds
+  (lexically, `9:00` would outrank `10:00:00`).
+- **Queue waits exclude pending jobs**, whose `StartTime` is a forecast.
+- **CPU, memory and `Group` are missing before December 2025.** See
+  [issue #6](https://github.com/gsbdarc/slurm-viz/issues/6).
 
+Provenance:
 - **Collection:** `/oak/stanford/schools/gsb/private/slurm_stats/squeue_by_group.sh sh_s-gsb`, run
-  on Sherlock's scrontab hourly at `30 * * * *` (owner: @alexstorer). Output is PSV files in
-  `/oak/stanford/schools/gsb/private/slurm_stats/data/YYYY/MM/`.
-- **Transform + Redivis upload:** `squeue-daily-dump.sh` in
-  `/oak/stanford/schools/gsb/private/slurm_stats/scripts/` (plus accompanying Python), submitted as
-  a recurring Slurm scrontab job at 16:20 PST daily (owner: mpjiang).
-- The upload is **raw hourly snapshots** — the transform does not collapse them to per-job rows, so
-  the dashboard deduplicates client-side in SQL.
+  hourly at `30 * * * *` from Sherlock's scrontab (owner: @alexstorer).
+- **Transform and upload:** `squeue-daily-dump.sh` in
+  `/oak/stanford/schools/gsb/private/slurm_stats/scripts/`, from scrontab daily at 16:20 (owner:
+  mpjiang).
 
 ### Derived columns
 

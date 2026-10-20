@@ -49,7 +49,7 @@ export const DATA = {
   },
   cluster: {
     cpu_by_partition: [{
-      Partition: "normal", job_count: 100, total_cpus: 400, avg_cpus_per_job: 4, avg_mem_gb: 16,
+      Partition: "normal", job_count: 100, total_cpus: 400, cpu_hours: 400, avg_cpus_per_job: 4, avg_mem_gb: 16,
       avg_elapsed_seconds: 3600, avg_wait_seconds: 60, ec2_cost_usd: 30,
     }],
     partitions: { normal: 100, gpu: 20 },
@@ -74,9 +74,10 @@ export const DATA = {
   groups: [{ Group: "g1", job_count: 120, user_count: 2, total_cpus: 420, cpu_hours: 402, total_wait_hours: 1 }],
   usersPeriod: {
     granularity: "month",
+    dimension: "partition",
     data: [
-      { period: day, Partition: "normal", unique_users: 2 },
-      { period: day, Partition: "gpu", unique_users: 1 },
+      { period: day, Segment: "normal", unique_users: 2 },
+      { period: day, Segment: "gpu", unique_users: 1 },
     ],
   },
   agentSummaries: [

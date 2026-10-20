@@ -30,8 +30,7 @@ export const JOB_COLUMNS = [
     title:
       "CPU time the job consumed, as a share of its CPUs × elapsed time. Blank for jobs still " +
       "running, jobs that never started, resized jobs (Slurm splits them into two records and " +
-      "misattributes the usage), and anything submitted before 2026-01-22 — blank means unknown, " +
-      "not zero.",
+      "misattributes the usage), and {before} — blank means unknown, not zero.",
   },
   { key: "ReqMem_GB", label: "Memory (GiB)", numeric: true, feature: "memory" },
   {
@@ -43,8 +42,8 @@ export const JOB_COLUMNS = [
     title:
       "Peak memory the job used, as a share of the memory it requested. Can exceed 100%: Slurm " +
       "rounds the allocation up to a per-core minimum, and the job may use that headroom. Blank " +
-      "for jobs still running, jobs that never started, resized jobs, and anything submitted " +
-      "before 2026-01-22 — blank means unknown, not zero.",
+      "for jobs still running, jobs that never started, resized jobs, and {before} — blank " +
+      "means unknown, not zero.",
   },
   { key: "gpu_count", label: "GPUs", numeric: true, feature: "gpus" },
   {
@@ -58,18 +57,18 @@ export const JOB_COLUMNS = [
       "average: a job busy for one minute and idle for a day still reads high. 0% means no sample " +
       "ever caught the GPU working. Can slightly exceed 100% when several processes share a GPU. " +
       "Blank for jobs with no GPU, jobs under 30 seconds (never sampled), resized jobs, jobs still " +
-      "running, and anything submitted before 2026-01-22.",
+      "running, and {before}.",
   },
   {
     key: "gpu_mem_pct",
     label: "GPU Mem Used",
     numeric: true,
     percent: true,
-    feature: "usage",
+    feature: "gpuMemModels",
     title:
       "Peak GPU memory the job held, as a share of the memory on the GPUs it was given (A30 24 GiB, " +
       "A40 48 GiB, H200 141 GiB). Blank for jobs with no GPU, jobs under 30 seconds, resized jobs, " +
-      "jobs spanning two GPU models, jobs still running, and anything submitted before 2026-01-22.",
+      "jobs spanning two GPU models, jobs still running, and {before}.",
   },
   { key: "ec2_cost_usd", label: "EC2 Cost", currency: true, feature: "ec2Cost" },
   { key: "ec2_instance", label: "EC2 Instance", feature: "ec2Cost" },
@@ -86,14 +85,26 @@ export const JOB_COLUMNS = [
  * column of em-dashes, which reads as "no GPUs were used" rather than "this dump can't tell you".
  */
 export function jobColumnsFor(cluster) {
+  const models = cluster.usage?.gpuModels || [];
   const available = {
     ...cluster.features,
     hasEndColumn: Boolean(cluster.columns.end),
+    // GPU memory % needs each node's GPU memory as its denominator. Without that map the column
+    // would be blank on every row, so hide it rather than show a column of dashes.
+    gpuMemModels: Boolean(cluster.features.usage && models.length),
   };
+  // Usage tooltips name the cluster's own cutoff and GPU models (see `usage` in `clusters.js`).
+  const fill = (title) =>
+    title &&
+    title
+      .replace("{before}", cluster.usage?.beforeText || "")
+      .replace("{models}", models.map((m) => `${m.model} ${m.memGiB} GiB`).join(", "));
   // Keyed on `sampling`, not on a state flag: a runtime is a lower bound because the source samples
   // a live queue, which is the actual cause, and stays right for a sampled cluster that does record
   // states.
   return JOB_COLUMNS.filter((c) => !c.feature || available[c.feature]).map((c) =>
+    c.title ? { ...c, title: fill(c.title) } : c,
+  ).map((c) =>
     c.key === "ElapsedRaw" && cluster.sampling
       ? {
           ...c,

@@ -45,8 +45,7 @@ const USER_COLUMNS = [
     numeric: true,
     feature: "usage",
     title:
-      "Jobs with usage data: finished, submitted on or after 2026-01-22, and not resized. The " +
-      "utilization columns cover only these.",
+      "Jobs with usage data: {since}, and not resized. The utilization columns cover only these.",
   },
   {
     key: "mem_weighted_pct",
@@ -93,7 +92,9 @@ const USER_COLUMNS = [
 
 /** Columns the cluster can actually populate — same idiom as `jobColumnsFor`. */
 function userColumnsFor(cluster) {
-  return USER_COLUMNS.filter((c) => !c.feature || cluster.features[c.feature]);
+  return USER_COLUMNS.filter((c) => !c.feature || cluster.features[c.feature]).map((c) =>
+    c.title ? { ...c, title: c.title.replace("{since}", cluster.usage?.sinceText || "") } : c,
+  );
 }
 
 const numericUserCols = new Set(
@@ -229,15 +230,27 @@ export default function UserDashboard({ cluster, startDate, endDate, node, group
 
   const periodRows = byPeriod?.data || [];
   const periodGranularity = byPeriod?.granularity || "month";
-  const partitions = [
-    ...new Set(periodRows.map((r) => r.Partition)),
-  ].sort();
+  const dimension = byPeriod?.dimension === "group" ? "Group" : "Partition";
+
+  // Each user is in exactly one segment per period (see getUsersByPeriod), so segments sum to the
+  // period's unique users. Show the segments with the most user-periods and roll the rest into
+  // "Other": past ~8 the colors repeat and the legend stops identifying anything.
+  const TOP_SEGMENTS = 8;
+  const OTHER = "Other";
+  const segTotals = {};
+  periodRows.forEach((r) => {
+    segTotals[r.Segment] = (segTotals[r.Segment] || 0) + Number(r.unique_users);
+  });
+  const ranked = Object.keys(segTotals).sort((a, b) => segTotals[b] - segTotals[a]);
+  const kept = new Set(ranked.length <= TOP_SEGMENTS + 1 ? ranked : ranked.slice(0, TOP_SEGMENTS));
+  const partitions = [...ranked.filter((sg) => kept.has(sg)), ...(kept.size < ranked.length ? [OTHER] : [])];
 
   const periodMap = {};
   periodRows.forEach((r) => {
     const sortKey = periodSortKey(r.period);
     if (!periodMap[sortKey]) periodMap[sortKey] = { period: formatPeriod(r.period, periodGranularity), _sort: sortKey };
-    periodMap[sortKey][r.Partition] = r.unique_users;
+    const seg = kept.has(r.Segment) ? r.Segment : OTHER;
+    periodMap[sortKey][seg] = (periodMap[sortKey][seg] || 0) + Number(r.unique_users);
   });
   const periodData = Object.values(periodMap).sort((a, b) =>
     a._sort.localeCompare(b._sort),
@@ -341,9 +354,14 @@ export default function UserDashboard({ cluster, startDate, endDate, node, group
       {periodData.length > 0 && (
         <div className="bg-white rounded-lg shadow border border-black-20 p-4">
           <h3 className="text-lg font-semibold text-black-su mb-3">
-            Unique Users by {granLabel} by Partition{partitionSuffix}
+            Unique Users by {granLabel}, by Main {dimension}{partitionSuffix}
           </h3>
-          <ChartFigure summary={`Unique users per ${granLabel.toLowerCase()} by partition: ${partitions.map((p) => { const pk = peak(periodData, "period", (r) => r[p]); return `${p} up to ${pk ? fmtCount(pk.value) : 0}`; }).join(", ") || "none"}.`}>
+          <p className="text-sm text-cool-grey mb-3">
+            Each user is counted once per {granLabel.toLowerCase()}, under the{" "}
+            {dimension.toLowerCase()} where they used the most CPU-hours, so a bar's height is that{" "}
+            {granLabel.toLowerCase()}'s unique users.
+          </p>
+          <ChartFigure summary={`Unique users per ${granLabel.toLowerCase()} by main ${dimension.toLowerCase()}: ${partitions.map((p) => { const pk = peak(periodData, "period", (r) => r[p]); return `${p} up to ${pk ? fmtCount(pk.value) : 0}`; }).join(", ") || "none"}.`}>
             <ResponsiveContainer width="100%" height={350}>
               <BarChart data={periodData}>
                 <CartesianGrid strokeDasharray="3 3" />
@@ -359,7 +377,7 @@ export default function UserDashboard({ cluster, startDate, endDate, node, group
                     key={p}
                     dataKey={p}
                     stackId="a"
-                    fill={COLORS[i % COLORS.length]}
+                    fill={p === OTHER ? "#B6B1A9" : COLORS[i % COLORS.length]}
                     name={p}
                   />
                 ))}
