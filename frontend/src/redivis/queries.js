@@ -127,7 +127,8 @@ async function runQuery(cluster, sql, cacheKey) {
     if (Date.now() - cached.fetchedAt < CACHE_TTL) return cached.result;
   }
 
-  const rows = await datasetFor(cluster).query(sql).listRows();
+  // `temporal: false` keeps dates as `Date`s, which the dashboards check for (0.4 defaults to Temporal).
+  const rows = await datasetFor(cluster).query(sql).toRowsArray({ temporal: false });
 
   if (key) {
     queryCache.set(key, { result: rows, fetchedAt: Date.now() });
